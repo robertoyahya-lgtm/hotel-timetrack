@@ -91,7 +91,7 @@ app.post('/api/auth/login', async (req, res) => {
   const payload = {
     id: user.id, name: user.name, email: user.email,
     role: user.role, hotelId: user.hotelId, hotelName: user.hotelName,
-    subUnit: user.subUnit
+    subUnit: user.subUnit, position: user.position || null
   };
   const token = jwt.sign(payload, SECRET, { expiresIn: '16h' });
   res.json({ token, user: payload });
@@ -146,12 +146,79 @@ app.get('/api/users', auth('admin', 'manager', 'accounting', 'supervisor'), (req
 
 const VALID_ROLES = ['employee', 'manager', 'supervisor', 'accounting', 'admin'];
 
+// ─── POSITIONS (job titles, e.g. Receptionist / Cleaner) ─────────────────────
+// Admin-managed list. Used to tag employees so payroll can be filtered by job.
+
+function readPositions() {
+  return db.read('positions.json');
+}
+
+function isPositionInUse(name) {
+  return db.read('users.json').some(
+    u => u.active !== false && u.position === name
+  );
+}
+
+app.get('/api/positions', auth('admin', 'accounting', 'manager'), (_req, res) => {
+  const positions = readPositions();
+  const users = db.read('users.json');
+  // Return both the bare list and a usage count so the admin UI can show
+  // why a delete might be blocked.
+  const detailed = positions.map(name => ({
+    name,
+    inUse: users.filter(u => u.active !== false && u.position === name).length
+  }));
+  res.json({ positions, detailed });
+});
+
+app.post('/api/positions', auth('admin'), (req, res) => {
+  const raw = (req.body?.name || '').trim();
+  if (!raw) return res.status(400).json({ error: 'name is required' });
+  if (raw.length > 40) return res.status(400).json({ error: 'name too long (max 40 chars)' });
+
+  const positions = readPositions();
+  if (positions.some(p => p.toLowerCase() === raw.toLowerCase()))
+    return res.status(409).json({ error: 'Position already exists' });
+
+  positions.push(raw);
+  positions.sort((a, b) => a.localeCompare(b));
+  db.write('positions.json', positions);
+  res.status(201).json({ positions });
+});
+
+app.delete('/api/positions/:name', auth('admin'), (req, res) => {
+  const target = req.params.name;
+  if (target === 'Unassigned')
+    return res.status(400).json({ error: 'The "Unassigned" position cannot be removed.' });
+  if (isPositionInUse(target))
+    return res.status(409).json({ error: 'Cannot delete: position is still assigned to one or more active employees.' });
+
+  const positions = readPositions().filter(p => p !== target);
+  db.write('positions.json', positions);
+  res.json({ positions });
+});
+
 app.post('/api/users', auth('admin'), async (req, res) => {
-  const { name, email, password, role, hotelId, subUnit } = req.body;
+  const { name, email, password, role, hotelId, subUnit, position } = req.body;
   if (!name || !email || !password || !role)
     return res.status(400).json({ error: 'name, email, password and role are required' });
   if (!VALID_ROLES.includes(role))
     return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
+
+  // Position is required for employees so payroll reports always have a row.
+  // For admin/accounting/manager/supervisor it's optional and defaults to null.
+  let resolvedPosition = null;
+  if (role === 'employee') {
+    const positions = readPositions();
+    if (!position || !positions.includes(position))
+      return res.status(400).json({ error: `position is required for employees and must be one of: ${positions.join(', ')}` });
+    resolvedPosition = position;
+  } else if (position) {
+    const positions = readPositions();
+    if (!positions.includes(position))
+      return res.status(400).json({ error: `position must be one of: ${positions.join(', ')}` });
+    resolvedPosition = position;
+  }
 
   const users = db.read('users.json');
   if (users.find(u => u.email?.toLowerCase() === email.toLowerCase()))
@@ -167,6 +234,7 @@ app.post('/api/users', auth('admin'), async (req, res) => {
     hotelId:   hotelId   || null,
     hotelName: hotel?.name || null,
     subUnit:   subUnit   || null,
+    position:  resolvedPosition,
     active: true,
     createdAt: new Date().toISOString(),
     deactivatedAt: null
@@ -184,6 +252,18 @@ app.put('/api/users/:id', auth('admin'), async (req, res) => {
   const updates = { ...req.body };
   if (updates.role && !VALID_ROLES.includes(updates.role))
     return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
+
+  // Validate position against the admin-managed list when provided.
+  if (Object.prototype.hasOwnProperty.call(updates, 'position')) {
+    if (updates.position === '' || updates.position === null) {
+      updates.position = null;
+    } else {
+      const positions = readPositions();
+      if (!positions.includes(updates.position))
+        return res.status(400).json({ error: `position must be one of: ${positions.join(', ')}` });
+    }
+  }
+
   if (updates.password) {
     updates.password = await bcrypt.hash(updates.password, 10);
   } else {
@@ -255,10 +335,16 @@ app.post('/api/shifts/start', auth('employee'), (req, res) => {
   const already = shifts.find(s => s.userId === user.id && s.status === 'active');
   if (already) return res.status(409).json({ error: 'You are already clocked in', shift: already });
 
+  // Resolve position from the user record (JWT may be stale if admin re-tagged
+  // the employee mid-session). Fall back to "Unassigned" so payroll always groups.
+  const fresh = db.read('users.json').find(u => u.id === user.id);
+  const stampPosition = fresh?.position || user.position || 'Unassigned';
+
   const shift = {
     id: uuidv4(),
     userId: user.id,     userName: user.name,
     hotelId: user.hotelId, hotelName: user.hotelName, subUnit: user.subUnit,
+    position: stampPosition,
     startTime: new Date().toISOString(),
     endTime: null, totalMinutes: null,
     status: 'active',
@@ -420,10 +506,13 @@ app.put('/api/corrections/:id/approve', auth('manager', 'admin'), (req, res) => 
   // Auto-create the corrected shift
   const shifts = db.read('shifts.json');
   const mins   = Math.round((new Date(c.requestedEnd) - new Date(c.requestedStart)) / 60000);
+  // Re-read the employee so we tag the correction with their current position.
+  const empNow = db.read('users.json').find(u => u.id === c.userId);
   shifts.push({
     id: uuidv4(),
     userId: c.userId, userName: c.userName,
     hotelId: c.hotelId, hotelName: c.hotelName, subUnit: c.subUnit,
+    position: empNow?.position || 'Unassigned',
     startTime: c.requestedStart, endTime: c.requestedEnd,
     totalMinutes: mins, status: 'completed',
     validated: false, validatedBy: null, validatedByName: null, validatedAt: null,
@@ -482,8 +571,18 @@ app.get('/api/payroll/periods', auth('accounting', 'admin', 'manager'), (_req, r
   res.json(buildPeriods());
 });
 
+// Resolve the position to use for a given shift. Prefers the snapshot
+// recorded on the shift itself (so historical reports stay correct even
+// if an employee is later re-tagged); falls back to the current user record
+// for older shifts that were created before this feature existed.
+function shiftPosition(shift, usersById) {
+  if (shift.position) return shift.position;
+  const u = usersById[shift.userId];
+  return u?.position || 'Unassigned';
+}
+
 app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, res) => {
-  const { from, to, hotelId } = req.query;
+  const { from, to, hotelId, position } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
   const { user } = req;
@@ -494,15 +593,27 @@ app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, re
   shifts = shifts.filter(s => s.startTime >= from && s.startTime <= to + 'T23:59:59.999Z');
 
   const users  = db.read('users.json');
-  const byEmp  = {};
-  const byHotel = {};
+  const usersById = Object.fromEntries(users.map(u => [u.id, u]));
+
+  // Apply position filter using the same resolution logic as the response,
+  // so older un-stamped shifts still match correctly.
+  if (position) {
+    shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
+  }
+
+  const byEmp     = {};
+  const byHotel   = {};
+  const byPosition = {};
 
   shifts.forEach(s => {
-    const u = users.find(u => u.id === s.userId);
+    const u   = usersById[s.userId];
+    const pos = shiftPosition(s, usersById);
+
     if (!byEmp[s.userId]) {
       byEmp[s.userId] = {
         userId: s.userId, name: s.userName,
         hotelId: s.hotelId, hotelName: s.hotelName, subUnit: s.subUnit,
+        position: pos,
         role: u?.role || 'employee', shifts: 0, minutes: 0
       };
     }
@@ -512,29 +623,43 @@ app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, re
     if (!byHotel[s.hotelId]) byHotel[s.hotelId] = { name: s.hotelName, shifts: 0, minutes: 0 };
     byHotel[s.hotelId].shifts++;
     byHotel[s.hotelId].minutes += s.totalMinutes || 0;
+
+    if (!byPosition[pos]) byPosition[pos] = { position: pos, shifts: 0, minutes: 0 };
+    byPosition[pos].shifts++;
+    byPosition[pos].minutes += s.totalMinutes || 0;
   });
 
   res.json({
     from, to,
+    filter: { hotelId: hotelId || null, position: position || null },
     totalShifts: shifts.length,
     totalMinutes: shifts.reduce((t, s) => t + (s.totalMinutes || 0), 0),
     byEmployee: Object.values(byEmp).sort((a, b) =>
-      a.hotelName.localeCompare(b.hotelName) || a.name.localeCompare(b.name)),
-    byHotel: Object.values(byHotel)
+      a.hotelName.localeCompare(b.hotelName) ||
+      (a.position || '').localeCompare(b.position || '') ||
+      a.name.localeCompare(b.name)),
+    byHotel: Object.values(byHotel),
+    byPosition: Object.values(byPosition).sort((a, b) =>
+      a.position.localeCompare(b.position))
   });
 });
 
 // Excel export
 app.get('/api/payroll/export/xlsx', auth('accounting', 'admin'), async (req, res) => {
   const ExcelJS = require('exceljs');
-  const { from, to, hotelId } = req.query;
+  const { from, to, hotelId, position } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
   const users  = db.read('users.json');
+  const usersById = Object.fromEntries(users.map(u => [u.id, u]));
   let shifts = db.read('shifts.json').filter(s => s.status === 'validated' && s.endTime);
   shifts = shifts.filter(s => s.startTime >= from && s.startTime <= to + 'T23:59:59.999Z');
   if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
-  shifts.sort((a, b) => a.hotelName.localeCompare(b.hotelName) || a.userName.localeCompare(b.userName));
+  if (position) shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
+  shifts.sort((a, b) =>
+    a.hotelName.localeCompare(b.hotelName) ||
+    shiftPosition(a, usersById).localeCompare(shiftPosition(b, usersById)) ||
+    a.userName.localeCompare(b.userName));
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Drivcoh Employees';
@@ -542,74 +667,110 @@ app.get('/api/payroll/export/xlsx', auth('accounting', 'admin'), async (req, res
   // — Summary sheet —
   const sum = wb.addWorksheet('Summary');
   sum.columns = [
-    { header: 'Employee',    key: 'name',    width: 24 },
-    { header: 'Hotel',       key: 'hotel',   width: 26 },
-    { header: 'Sub-unit',    key: 'sub',     width: 18 },
-    { header: 'Role',        key: 'role',    width: 14 },
-    { header: 'Shifts',      key: 'shifts',  width: 8  },
-    { header: 'Total Hours', key: 'hours',   width: 13 },
+    { header: 'Employee',    key: 'name',     width: 24 },
+    { header: 'Hotel',       key: 'hotel',    width: 26 },
+    { header: 'Sub-unit',    key: 'sub',      width: 18 },
+    { header: 'Position',    key: 'position', width: 16 },
+    { header: 'Role',        key: 'role',     width: 14 },
+    { header: 'Shifts',      key: 'shifts',   width: 8  },
+    { header: 'Total Hours', key: 'hours',    width: 13 },
   ];
   const hRow = sum.getRow(1);
   hRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  hRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+  hRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F3A5F' } };
 
   const byEmp = {};
   shifts.forEach(s => {
-    const u = users.find(u => u.id === s.userId);
-    if (!byEmp[s.userId]) byEmp[s.userId] = { name: s.userName, hotel: s.hotelName, sub: s.subUnit || '—', role: u?.role || 'employee', shifts: 0, minutes: 0 };
+    const u   = usersById[s.userId];
+    const pos = shiftPosition(s, usersById);
+    if (!byEmp[s.userId]) byEmp[s.userId] = {
+      name: s.userName, hotel: s.hotelName, sub: s.subUnit || '—',
+      position: pos, role: u?.role || 'employee', shifts: 0, minutes: 0
+    };
     byEmp[s.userId].shifts++;
     byEmp[s.userId].minutes += s.totalMinutes || 0;
   });
   Object.values(byEmp).forEach(e => sum.addRow({ ...e, hours: parseFloat((e.minutes / 60).toFixed(2)) }));
 
+  // — Totals by position sheet —
+  const pos = wb.addWorksheet('By Position');
+  pos.columns = [
+    { header: 'Position',    key: 'position', width: 22 },
+    { header: 'Employees',   key: 'employees', width: 11 },
+    { header: 'Shifts',      key: 'shifts',   width: 9  },
+    { header: 'Total Hours', key: 'hours',    width: 13 },
+  ];
+  const pHead = pos.getRow(1);
+  pHead.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  pHead.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F3A5F' } };
+  const byPos = {};
+  Object.values(byEmp).forEach(e => {
+    if (!byPos[e.position]) byPos[e.position] = { position: e.position, employees: 0, shifts: 0, minutes: 0 };
+    byPos[e.position].employees++;
+    byPos[e.position].shifts  += e.shifts;
+    byPos[e.position].minutes += e.minutes;
+  });
+  Object.values(byPos)
+    .sort((a, b) => a.position.localeCompare(b.position))
+    .forEach(p => pos.addRow({ ...p, hours: parseFloat((p.minutes / 60).toFixed(2)) }));
+
   // — Detailed shifts sheet —
   const det = wb.addWorksheet('Detailed Shifts');
   det.columns = [
-    { header: 'Employee',     key: 'name',   width: 24 },
-    { header: 'Hotel',        key: 'hotel',  width: 26 },
-    { header: 'Sub-unit',     key: 'sub',    width: 18 },
-    { header: 'Date',         key: 'date',   width: 12 },
-    { header: 'Start',        key: 'start',  width: 10 },
-    { header: 'End',          key: 'end',    width: 10 },
-    { header: 'Hours',        key: 'hours',  width: 8  },
-    { header: 'Validated By', key: 'val',    width: 20 },
-    { header: 'Notes',        key: 'notes',  width: 32 },
+    { header: 'Employee',     key: 'name',     width: 24 },
+    { header: 'Hotel',        key: 'hotel',    width: 26 },
+    { header: 'Sub-unit',     key: 'sub',      width: 18 },
+    { header: 'Position',     key: 'position', width: 16 },
+    { header: 'Date',         key: 'date',     width: 12 },
+    { header: 'Start',        key: 'start',    width: 10 },
+    { header: 'End',          key: 'end',      width: 10 },
+    { header: 'Hours',        key: 'hours',    width: 8  },
+    { header: 'Validated By', key: 'val',      width: 20 },
+    { header: 'Notes',        key: 'notes',    width: 32 },
   ];
   const dHead = det.getRow(1);
   dHead.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  dHead.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } };
+  dHead.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F3A5F' } };
 
   const tf = iso => new Date(iso).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false });
   shifts.forEach(s => det.addRow({
     name:  s.userName,     hotel: s.hotelName, sub: s.subUnit || '—',
+    position: shiftPosition(s, usersById),
     date:  s.startTime.slice(0, 10), start: tf(s.startTime), end: tf(s.endTime),
     hours: parseFloat((s.totalMinutes / 60).toFixed(2)),
     val:   s.validatedByName || '—', notes: s.notes || ''
   }));
 
+  const slug = position ? `-${position.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}${slug}.xlsx"`);
   await wb.xlsx.write(res);
   res.end();
 });
 
 // CSV export
 app.get('/api/payroll/export/csv', auth('accounting', 'admin'), (req, res) => {
-  const { from, to, hotelId } = req.query;
+  const { from, to, hotelId, position } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
   const users = db.read('users.json');
+  const usersById = Object.fromEntries(users.map(u => [u.id, u]));
   let shifts = db.read('shifts.json').filter(s => s.status === 'validated' && s.endTime);
   shifts = shifts.filter(s => s.startTime >= from && s.startTime <= to + 'T23:59:59.999Z');
   if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
-  shifts.sort((a, b) => a.hotelName.localeCompare(b.hotelName) || a.userName.localeCompare(b.userName));
+  if (position) shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
+  shifts.sort((a, b) =>
+    a.hotelName.localeCompare(b.hotelName) ||
+    shiftPosition(a, usersById).localeCompare(shiftPosition(b, usersById)) ||
+    a.userName.localeCompare(b.userName));
 
   const tf = iso => new Date(iso).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const rows = [['Employee', 'Hotel', 'Sub-unit', 'Role', 'Date', 'Start', 'End', 'Hours', 'Validated By']];
+  const rows = [['Employee', 'Hotel', 'Sub-unit', 'Position', 'Role', 'Date', 'Start', 'End', 'Hours', 'Validated By']];
   shifts.forEach(s => {
-    const u = users.find(u => u.id === s.userId);
+    const u = usersById[s.userId];
     rows.push([
       s.userName, s.hotelName, s.subUnit || '',
+      shiftPosition(s, usersById),
       u?.role || 'employee',
       s.startTime.slice(0, 10), tf(s.startTime), tf(s.endTime),
       parseFloat((s.totalMinutes / 60).toFixed(2)),
@@ -618,8 +779,9 @@ app.get('/api/payroll/export/csv', auth('accounting', 'admin'), (req, res) => {
   });
 
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const slug = position ? `-${position.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
   res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}.csv"`);
+  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}${slug}.csv"`);
   res.send(csv);
 });
 
@@ -666,6 +828,39 @@ async function bootstrap() {
     if (!fs.existsSync(fp)) fs.writeFileSync(fp, '[]');
   }
 
+  // Seed positions list with sensible defaults the first time we boot.
+  const positionsFp = path.join(DATA, 'positions.json');
+  if (!fs.existsSync(positionsFp)) {
+    fs.writeFileSync(positionsFp, JSON.stringify(
+      ['Receptionist', 'Cleaner', 'Maintenance', 'Night Auditor', 'Other'],
+      null, 2
+    ));
+  }
+
+  // One-time migration: every user without a position gets "Unassigned" so
+  // payroll/reports never have to deal with null values. This is idempotent —
+  // users who already have a position keep it.
+  {
+    const usersForMigration = db.read('users.json');
+    let touched = 0;
+    usersForMigration.forEach(u => {
+      if (u.position === undefined || u.position === null || u.position === '') {
+        u.position = 'Unassigned';
+        touched++;
+      }
+    });
+    if (touched > 0) {
+      // Make sure "Unassigned" is in the positions list so the dropdown shows it.
+      const positions = db.read('positions.json');
+      if (!positions.includes('Unassigned')) {
+        positions.push('Unassigned');
+        db.write('positions.json', positions);
+      }
+      db.write('users.json', usersForMigration);
+      console.log(`  Migrated ${touched} user(s) to position="Unassigned".`);
+    }
+  }
+
   // Create initial admin only when the user table is empty.
   const users = db.read('users.json');
   if (users.length === 0) {
@@ -681,6 +876,7 @@ async function bootstrap() {
       hotelId: null,
       hotelName: null,
       subUnit: null,
+      position: null,
       active: true,
       createdAt: new Date().toISOString(),
       deactivatedAt: null,

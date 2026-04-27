@@ -1025,8 +1025,13 @@ async function renderEmployees() {
   const hotels = await GET('/api/hotels');
   const canManage = user.role === 'admin';
 
+  // Positions are admin-managed; admin/accounting/manager can read.
+  let positions = [];
+  try { positions = (await GET('/api/positions')).positions || []; } catch {}
+
   document.getElementById('topbar-actions').innerHTML = canManage
-    ? '<button class="btn btn-primary" onclick="openAddEmployee()">Add Employee</button>'
+    ? `<button class="btn btn-secondary" onclick="openManagePositions()">Manage Positions</button>
+       <button class="btn btn-primary" onclick="openAddEmployee()">Add Employee</button>`
     : '';
 
   body.innerHTML = `
@@ -1044,6 +1049,10 @@ async function renderEmployees() {
         <option value="admin">Admin</option>
         <option value="accounting">Accounting</option>
       </select>` : '<input type="hidden" id="emp-role-filter" value="">'}
+      <select class="form-control" id="emp-position-filter">
+        <option value="">All Positions</option>
+        ${positions.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+      </select>
       <select class="form-control" id="emp-active-filter">
         <option value="true">Active</option>
         <option value="">All</option>
@@ -1054,7 +1063,7 @@ async function renderEmployees() {
       <div class="table-wrap" id="emp-table"><div class="empty-state text-muted">Loading...</div></div>
     </div>`;
 
-  ['emp-search','emp-hotel-filter','emp-role-filter','emp-active-filter'].forEach(id => {
+  ['emp-search','emp-hotel-filter','emp-role-filter','emp-position-filter','emp-active-filter'].forEach(id => {
     document.getElementById(id).addEventListener('change', () => loadEmpTable(hotels));
   });
   document.getElementById('emp-search').addEventListener('input', () => loadEmpTable(hotels));
@@ -1064,21 +1073,23 @@ async function renderEmployees() {
 let allEmployees = [];
 
 async function loadEmpTable(hotels) {
-  const me        = getUser();
-  const canManage = me.role === 'admin';
-  const search    = document.getElementById('emp-search').value.toLowerCase();
-  const hotelFil  = document.getElementById('emp-hotel-filter').value;
-  const roleFil   = document.getElementById('emp-role-filter').value;
-  const activeFil = document.getElementById('emp-active-filter').value;
+  const me         = getUser();
+  const canManage  = me.role === 'admin';
+  const search     = document.getElementById('emp-search').value.toLowerCase();
+  const hotelFil   = document.getElementById('emp-hotel-filter').value;
+  const roleFil    = document.getElementById('emp-role-filter').value;
+  const positionFil = document.getElementById('emp-position-filter').value;
+  const activeFil  = document.getElementById('emp-active-filter').value;
 
   const el = document.getElementById('emp-table');
 
   try {
     allEmployees = await GET('/api/users');
     let users = allEmployees;
-    if (search)    users = users.filter(u => u.name.toLowerCase().includes(search) || u.email.toLowerCase().includes(search));
-    if (hotelFil)  users = users.filter(u => u.hotelId === hotelFil);
-    if (roleFil)   users = users.filter(u => u.role === roleFil);
+    if (search)       users = users.filter(u => u.name.toLowerCase().includes(search) || u.email.toLowerCase().includes(search));
+    if (hotelFil)     users = users.filter(u => u.hotelId === hotelFil);
+    if (roleFil)      users = users.filter(u => u.role === roleFil);
+    if (positionFil)  users = users.filter(u => (u.position || 'Unassigned') === positionFil);
     if (activeFil === 'true')  users = users.filter(u => u.active !== false);
     if (activeFil === 'false') users = users.filter(u => u.active === false);
 
@@ -1086,7 +1097,7 @@ async function loadEmpTable(hotels) {
 
     el.innerHTML = `<table>
       <thead>
-        <tr><th>Name</th><th>Email</th><th>Role</th><th>Hotel</th><th>Sub-unit</th><th>Status</th>${canManage ? '<th>Actions</th>' : ''}</tr>
+        <tr><th>Name</th><th>Email</th><th>Role</th><th>Position</th><th>Hotel</th><th>Sub-unit</th><th>Status</th>${canManage ? '<th>Actions</th>' : ''}</tr>
       </thead>
       <tbody>
         ${users.map(u => `
@@ -1094,6 +1105,9 @@ async function loadEmpTable(hotels) {
             <td class="td-name">${esc(u.name)}</td>
             <td class="text-muted">${esc(u.email)}</td>
             <td>${roleBadge(u.role)}</td>
+            <td>${u.position
+              ? `<span class="badge badge-position">${esc(u.position)}</span>`
+              : '<span class="text-muted">—</span>'}</td>
             <td>${esc(u.hotelName || '—')}</td>
             <td class="text-muted">${esc(u.subUnit || '—')}</td>
             <td>${u.active !== false
@@ -1115,6 +1129,8 @@ async function loadEmpTable(hotels) {
 
 async function openAddEmployee() {
   const hotels = await GET('/api/hotels');
+  let positions = [];
+  try { positions = (await GET('/api/positions')).positions || []; } catch {}
   showModal(`
     <div class="modal-head">
       <div class="modal-head-title">Add Employee</div>
@@ -1132,19 +1148,24 @@ async function openAddEmployee() {
         <div class="form-group span2"><label>Temporary Password *</label>
           <input class="form-control" type="password" id="ae-pw" placeholder="They can change it in My Account" autocomplete="new-password"></div>
         <div class="form-group"><label>Role *</label>
-          <select class="form-control" id="ae-role">
+          <select class="form-control" id="ae-role" onchange="onRoleChange('ae')">
             <option value="employee">Employee</option>
             <option value="manager">Manager</option>
             <option value="supervisor">Supervisor</option>
             <option value="accounting">Accounting</option>
             <option value="admin">Admin</option>
           </select></div>
+        <div class="form-group"><label id="ae-position-lbl">Position *</label>
+          <select class="form-control" id="ae-position">
+            <option value="">— Select a position —</option>
+            ${positions.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+          </select></div>
         <div class="form-group"><label>Hotel</label>
           <select class="form-control" id="ae-hotel" onchange="updateSubUnits(this,'ae-subunit')">
             <option value="">— No hotel —</option>
             ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits)}'>${esc(h.name)}</option>`).join('')}
           </select></div>
-        <div class="form-group span2"><label>Sub-unit</label>
+        <div class="form-group"><label>Sub-unit</label>
           <select class="form-control" id="ae-subunit"><option value="">— None —</option></select></div>
         <div class="form-group span2"><label>Status</label>
           <select class="form-control" id="ae-active">
@@ -1157,6 +1178,14 @@ async function openAddEmployee() {
       <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveNewEmployee()">Add Employee</button>
     </div>`);
+  onRoleChange('ae');
+}
+
+// Show "Position *" only when role=employee. For other roles position is optional.
+function onRoleChange(prefix) {
+  const role = document.getElementById(`${prefix}-role`).value;
+  const lbl  = document.getElementById(`${prefix}-position-lbl`);
+  if (lbl) lbl.textContent = role === 'employee' ? 'Position *' : 'Position';
 }
 
 function updateSubUnits(hotelSel, subId) {
@@ -1168,16 +1197,22 @@ function updateSubUnits(hotelSel, subId) {
 }
 
 async function saveNewEmployee() {
-  const name    = document.getElementById('ae-name').value.trim();
-  const email   = document.getElementById('ae-email').value.trim();
-  const pw      = document.getElementById('ae-pw').value;
-  const role    = document.getElementById('ae-role').value;
-  const hotelId = document.getElementById('ae-hotel').value;
-  const subUnit = document.getElementById('ae-subunit').value;
-  const active  = document.getElementById('ae-active').value === 'true';
+  const name     = document.getElementById('ae-name').value.trim();
+  const email    = document.getElementById('ae-email').value.trim();
+  const pw       = document.getElementById('ae-pw').value;
+  const role     = document.getElementById('ae-role').value;
+  const position = document.getElementById('ae-position').value;
+  const hotelId  = document.getElementById('ae-hotel').value;
+  const subUnit  = document.getElementById('ae-subunit').value;
+  const active   = document.getElementById('ae-active').value === 'true';
   if (!name || !email || !pw || !role) { toast('Name, email, password and role are required.', 'err'); return; }
+  if (role === 'employee' && !position) { toast('Please pick a position for this employee.', 'err'); return; }
   try {
-    await POST('/api/users', { name, email, password: pw, role, hotelId: hotelId || null, subUnit: subUnit || null, active });
+    await POST('/api/users', {
+      name, email, password: pw, role,
+      position: position || null,
+      hotelId: hotelId || null, subUnit: subUnit || null, active
+    });
     toast('Employee added.', 'ok');
     closeModal();
     loadEmpTable(await GET('/api/hotels'));
@@ -1186,6 +1221,8 @@ async function saveNewEmployee() {
 
 async function openEditEmployee(id) {
   const hotels = await GET('/api/hotels');
+  let positions = [];
+  try { positions = (await GET('/api/positions')).positions || []; } catch {}
   const u = allEmployees.find(x => x.id === id);
   if (!u) return;
   const hotel = hotels.find(h => h.id === u.hotelId);
@@ -1205,12 +1242,17 @@ async function openEditEmployee(id) {
         <div class="form-group span2"><label>New Password <span style="font-weight:400;color:var(--gray-400)">(leave blank to keep current)</span></label>
           <input class="form-control" type="password" id="ee-pw" placeholder="Leave blank to keep current" autocomplete="new-password"></div>
         <div class="form-group"><label>Role *</label>
-          <select class="form-control" id="ee-role">
+          <select class="form-control" id="ee-role" onchange="onRoleChange('ee')">
             <option value="employee"   ${u.role==='employee'?'selected':''}>Employee</option>
             <option value="manager"    ${u.role==='manager'?'selected':''}>Manager</option>
             <option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option>
             <option value="accounting" ${u.role==='accounting'?'selected':''}>Accounting</option>
             <option value="admin"      ${u.role==='admin'?'selected':''}>Admin</option>
+          </select></div>
+        <div class="form-group"><label id="ee-position-lbl">${u.role==='employee'?'Position *':'Position'}</label>
+          <select class="form-control" id="ee-position">
+            <option value="">— None —</option>
+            ${positions.map(p => `<option value="${esc(p)}" ${p===u.position?'selected':''}>${esc(p)}</option>`).join('')}
           </select></div>
         <div class="form-group"><label>Status</label>
           <select class="form-control" id="ee-active">
@@ -1236,16 +1278,22 @@ async function openEditEmployee(id) {
 }
 
 async function saveEditEmployee(id) {
-  const name    = document.getElementById('ee-name').value.trim();
-  const email   = document.getElementById('ee-email').value.trim();
-  const pw      = document.getElementById('ee-pw').value;
-  const role    = document.getElementById('ee-role').value;
-  const active  = document.getElementById('ee-active').value === 'true';
-  const hotelId = document.getElementById('ee-hotel').value;
-  const subUnit = document.getElementById('ee-subunit').value;
+  const name     = document.getElementById('ee-name').value.trim();
+  const email    = document.getElementById('ee-email').value.trim();
+  const pw       = document.getElementById('ee-pw').value;
+  const role     = document.getElementById('ee-role').value;
+  const position = document.getElementById('ee-position').value;
+  const active   = document.getElementById('ee-active').value === 'true';
+  const hotelId  = document.getElementById('ee-hotel').value;
+  const subUnit  = document.getElementById('ee-subunit').value;
   if (!name || !email) { toast('Name and email are required.', 'err'); return; }
+  if (role === 'employee' && !position) { toast('Please pick a position for this employee.', 'err'); return; }
   try {
-    const body = { name, email, role, active, hotelId: hotelId || null, subUnit: subUnit || null };
+    const body = {
+      name, email, role, active,
+      position: position || null,
+      hotelId: hotelId || null, subUnit: subUnit || null
+    };
     if (pw) body.password = pw;
     await PUT(`/api/users/${id}`, body);
     // If deactivated via active field, also update deactivatedAt
@@ -1274,6 +1322,80 @@ async function activateUser(id) {
   } catch { toast('Error.', 'err'); }
 }
 
+// ─── Positions admin (admin only) ───────────────────────────────────────────
+
+async function openManagePositions() {
+  await renderPositionsModal();
+}
+
+async function renderPositionsModal() {
+  let detailed = [];
+  try { detailed = (await GET('/api/positions')).detailed || []; } catch {}
+  showModal(`
+    <div class="modal-head">
+      <div class="modal-head-title">Manage Positions</div>
+      <button class="modal-close" onclick="closeModal()">&#10005;</button>
+    </div>
+    <div class="modal-body">
+      <p class="text-muted text-sm mb12">
+        Positions are job titles you can assign to employees (e.g. Receptionist, Cleaner).
+        Payroll reports can be filtered by position.
+      </p>
+
+      <div class="form-grid mb16">
+        <div class="form-group span2"><label>Add a new position</label>
+          <div style="display:flex;gap:8px">
+            <input class="form-control" id="np-name" placeholder="e.g. Front Desk" autocomplete="off">
+            <button class="btn btn-primary" onclick="addPosition()">Add</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Position</th><th>In use by</th><th style="width:120px"></th></tr></thead>
+          <tbody>
+            ${detailed.length === 0
+              ? '<tr><td colspan="3" class="empty-state text-muted">No positions yet.</td></tr>'
+              : detailed.map(p => `
+                <tr>
+                  <td class="td-name">${esc(p.name)}</td>
+                  <td>${p.inUse} employee${p.inUse === 1 ? '' : 's'}</td>
+                  <td>${p.name === 'Unassigned'
+                    ? '<span class="text-muted text-sm">System</span>'
+                    : (p.inUse > 0
+                      ? '<span class="text-muted text-sm">In use</span>'
+                      : `<button class="btn btn-xs btn-danger" onclick="deletePosition('${esc(p.name).replace(/'/g, "\\'")}')">Remove</button>`)}
+                  </td>
+                </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="closeModal()">Done</button>
+    </div>`);
+}
+
+async function addPosition() {
+  const name = document.getElementById('np-name').value.trim();
+  if (!name) { toast('Enter a position name.', 'err'); return; }
+  try {
+    await POST('/api/positions', { name });
+    toast(`Position "${name}" added.`, 'ok');
+    await renderPositionsModal();
+  } catch (e) { toast(e.error || 'Error adding position.', 'err'); }
+}
+
+async function deletePosition(name) {
+  if (!confirm(`Remove the position "${name}"?`)) return;
+  try {
+    await DELETE(`/api/positions/${encodeURIComponent(name)}`);
+    toast(`Position "${name}" removed.`, 'ok');
+    await renderPositionsModal();
+  } catch (e) { toast(e.error || 'Error removing position.', 'err'); }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ACCOUNTING / PAYROLL
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1285,6 +1407,8 @@ async function renderPayroll() {
   const body    = document.getElementById('page-body');
   const periods = await GET('/api/payroll/periods');
   const hotels  = await GET('/api/hotels');
+  let positions = [];
+  try { positions = (await GET('/api/positions')).positions || []; } catch {}
   const cur     = periods.find(p => p.isCurrent) || periods[0];
 
   body.innerHTML = `
@@ -1298,11 +1422,15 @@ async function renderPayroll() {
             <option value="">All Hotels</option>
             ${hotels.map(h => `<option value="${h.id}">${esc(h.name)}</option>`).join('')}
           </select>
+          <select class="form-control" id="pr-position">
+            <option value="">All Positions</option>
+            ${positions.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+          </select>
           <button class="btn btn-primary" id="pr-load">Generate Report</button>
           <button class="btn btn-secondary" id="pr-csv" style="display:none">Export CSV</button>
           <button class="btn btn-secondary" id="pr-xlsx" style="display:none">Export Excel</button>
         </div>
-        <p class="text-muted text-sm mt12">Shows only manager-validated shifts.</p>
+        <p class="text-muted text-sm mt12">Shows only manager-validated shifts. Filter by hotel and/or position to scope the report.</p>
       </div>
     </div>
     <div id="pr-output"></div>`;
@@ -1316,17 +1444,25 @@ async function renderPayroll() {
 async function loadPayroll() {
   const [from, to] = document.getElementById('pr-period').value.split('|');
   const hotelId    = document.getElementById('pr-hotel').value;
+  const position   = document.getElementById('pr-position').value;
 
-  payrollParams = { from, to, hotelId };
+  payrollParams = { from, to, hotelId, position };
   const el = document.getElementById('pr-output');
   el.innerHTML = '<div class="empty-state text-muted">Loading...</div>';
 
+  const qs = new URLSearchParams({ from, to });
+  if (hotelId)  qs.set('hotelId',  hotelId);
+  if (position) qs.set('position', position);
+
   try {
-    payrollData = await GET(`/api/payroll/summary?from=${from}&to=${to}${hotelId ? '&hotelId=' + hotelId : ''}`);
+    payrollData = await GET(`/api/payroll/summary?${qs.toString()}`);
     document.getElementById('pr-csv').style.display  = '';
     document.getElementById('pr-xlsx').style.display = '';
 
     const maxMins = Math.max(...payrollData.byEmployee.map(e => e.minutes), 1);
+    const filterChip = position
+      ? `<span class="badge badge-position" style="margin-left:8px">${esc(position)}</span>`
+      : '';
 
     el.innerHTML = `
       <div class="stat-grid mb12" style="grid-template-columns:repeat(3,1fr)">
@@ -1337,13 +1473,13 @@ async function loadPayroll() {
 
       <div class="card mb12">
         <div class="card-head">
-          <span>By Employee</span>
+          <span>By Employee${filterChip}</span>
           <span class="text-muted text-sm">${from} to ${to}</span>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Employee</th><th>Hotel</th><th>Sub-unit</th><th>Role</th><th>Shifts</th><th>Total Hours</th><th style="min-width:160px"></th></tr>
+              <tr><th>Employee</th><th>Hotel</th><th>Sub-unit</th><th>Position</th><th>Role</th><th>Shifts</th><th>Total Hours</th><th style="min-width:160px"></th></tr>
             </thead>
             <tbody>
               ${payrollData.byEmployee.map(e => `
@@ -1351,6 +1487,9 @@ async function loadPayroll() {
                   <td class="td-name">${esc(e.name)}</td>
                   <td>${esc(e.hotelName)}</td>
                   <td class="text-muted">${esc(e.subUnit || '—')}</td>
+                  <td>${e.position
+                    ? `<span class="badge badge-position">${esc(e.position)}</span>`
+                    : '<span class="text-muted">—</span>'}</td>
                   <td>${roleBadge(e.role)}</td>
                   <td>${e.shifts}</td>
                   <td class="fw600">${fmtDurH(e.minutes)}</td>
@@ -1359,11 +1498,30 @@ async function loadPayroll() {
                   </td>
                 </tr>`).join('')}
               <tr style="background:var(--gray-50);font-weight:700;border-top:2px solid var(--gray-200)">
-                <td colspan="4">Total</td>
+                <td colspan="5">Total</td>
                 <td>${payrollData.totalShifts}</td>
                 <td>${fmtDurH(payrollData.totalMinutes)}</td>
                 <td></td>
               </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card mb12">
+        <div class="card-head">By Position</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Position</th><th>Shifts</th><th>Total Hours</th></tr></thead>
+            <tbody>
+              ${(payrollData.byPosition || []).length === 0
+                ? '<tr><td colspan="3" class="empty-state text-muted">No data.</td></tr>'
+                : payrollData.byPosition.map(p => `
+                  <tr>
+                    <td class="td-name"><span class="badge badge-position">${esc(p.position)}</span></td>
+                    <td>${p.shifts}</td>
+                    <td class="fw600">${fmtDurH(p.minutes)}</td>
+                  </tr>`).join('')}
             </tbody>
           </table>
         </div>
@@ -1390,16 +1548,20 @@ async function loadPayroll() {
   }
 }
 
+function payrollExportQS() {
+  const { from, to, hotelId, position } = payrollParams;
+  const qs = new URLSearchParams({ from, to });
+  if (hotelId)  qs.set('hotelId',  hotelId);
+  if (position) qs.set('position', position);
+  return qs.toString();
+}
+
 function exportPayrollCSV() {
-  const { from, to, hotelId } = payrollParams;
-  const url = `/api/payroll/export/csv?from=${from}&to=${to}${hotelId ? '&hotelId=' + hotelId : ''}`;
-  window.open(url);
+  window.open(`/api/payroll/export/csv?${payrollExportQS()}`);
 }
 
 function exportPayrollXLSX() {
-  const { from, to, hotelId } = payrollParams;
-  const url = `/api/payroll/export/xlsx?from=${from}&to=${to}${hotelId ? '&hotelId=' + hotelId : ''}`;
-  window.open(url);
+  window.open(`/api/payroll/export/xlsx?${payrollExportQS()}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

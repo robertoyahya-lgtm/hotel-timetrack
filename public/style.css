@@ -692,6 +692,7 @@ tbody tr:hover td { background: var(--gray-50); }
 .badge-admin      { background: #f3edf8;           color: #4a3461; border-color: #d8c8e6; }
 .badge-accounting { background: var(--green-lt);   color: #1f5c46; border-color: #b9d9c9; }
 .badge-inactive   { background: var(--gray-100);   color: var(--gray-500); border-color: var(--gray-300); border-style: dashed; }
+.badge-position   { background: #f1ecf6;           color: #4a3461; border-color: #d8c8e6; text-transform: none; letter-spacing: 0; font-weight: 600; }
 
 /* ════════════════════════════════════════════════════════════════════════
    BUTTONS
