@@ -1,0 +1,38 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy by pointing Render's "New → Blueprint" at the GitHub repo containing
+# this file. Render will create the web service AND the persistent disk in a
+# single step, and prompt you for the secret values listed under `sync: false`.
+
+services:
+  - type: web
+    name: hotel-timetrack
+    runtime: node
+    plan: starter            # upgrade to `standard` for more RAM / always-on
+    region: oregon           # change to the region closest to your users
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /login
+    autoDeploy: true
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: DATA_DIR
+        value: /var/data       # must match the mount path of the disk below
+
+      - key: JWT_SECRET
+        generateValue: true    # Render generates a strong random value once
+
+      - key: ADMIN_EMAIL
+        sync: false            # prompted in the Render dashboard on first deploy
+
+      - key: ADMIN_PASSWORD
+        sync: false            # prompted in the Render dashboard on first deploy
+
+    disk:
+      name: hotel-timetrack-data
+      mountPath: /var/data
+      sizeGB: 1                # 1 GB is plenty for JSON files; resize later if needed

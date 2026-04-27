@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — Drivchoh Employees</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="login-page">
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="login-mark">D</div>
+        <div class="login-brand-name">Drivchoh Employees</div>
+        <div class="login-brand-sub">Staff Portal</div>
+      </div>
+
+      <form id="login-form" autocomplete="on">
+        <div class="field-group">
+          <label class="field-label" for="email">Email address</label>
+          <input class="field-input" type="email" id="email"
+                 placeholder="you@hotelgroup.com"
+                 autocomplete="username" required>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="password">Password</label>
+          <input class="field-input" type="password" id="password"
+                 placeholder="••••••••"
+                 autocomplete="current-password" required>
+        </div>
+        <div class="login-error" id="login-error"></div>
+        <button class="btn-signin" type="submit" id="login-btn">Sign In</button>
+      </form>
+
+      <p class="login-note">
+        Contact your administrator if you need access or a password reset.
+      </p>
+    </div>
+  </div>
+  <script src="login.js"></script>
+</body>
+</html>
