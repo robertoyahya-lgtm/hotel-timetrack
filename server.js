@@ -537,7 +537,7 @@ app.get('/api/payroll/export/xlsx', auth('accounting', 'admin'), async (req, res
   shifts.sort((a, b) => a.hotelName.localeCompare(b.hotelName) || a.userName.localeCompare(b.userName));
 
   const wb = new ExcelJS.Workbook();
-  wb.creator = 'Drivchoh Employees';
+  wb.creator = 'Drivcoh Employees';
 
   // — Summary sheet —
   const sum = wb.addWorksheet('Summary');
@@ -700,7 +700,7 @@ bootstrap().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
     const ips = Object.values(require('os').networkInterfaces()).flat()
       .filter(i => i.family === 'IPv4' && !i.internal).map(i => i.address);
-    console.log('\n  Drivchoh Employees — Payroll Platform');
+    console.log('\n  Drivcoh Employees — Payroll Platform');
     console.log(`  Local:   http://localhost:${PORT}`);
     ips.forEach(ip => console.log(`  Network: http://${ip}:${PORT}`));
     console.log(`  Data:    ${DATA}`);
