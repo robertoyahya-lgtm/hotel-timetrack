@@ -1415,8 +1415,24 @@ async function renderPayroll() {
     <div class="card mb12">
       <div class="card-body" style="padding:14px 18px">
         <div class="filters">
-          <select class="form-control" id="pr-period">
-            ${periods.map(p => `<option value="${p.start}|${p.end}" ${p.isCurrent?'selected':''}>${esc(p.label)}${p.isCurrent?' (current)':''}</option>`).join('')}
+          <div class="date-range">
+            <label class="text-muted text-sm" for="pr-from">From</label>
+            <input type="date" class="form-control" id="pr-from" value="${cur ? cur.start : ''}">
+            <label class="text-muted text-sm" for="pr-to">To</label>
+            <input type="date" class="form-control" id="pr-to" value="${cur ? cur.end : ''}">
+          </div>
+          <select class="form-control" id="pr-preset" title="Quick presets">
+            <option value="">Quick periods…</option>
+            <optgroup label="Pay periods">
+              ${periods.map(p => `<option value="${p.start}|${p.end}" ${p.isCurrent?'selected':''}>${esc(p.label)}${p.isCurrent?' (current)':''}</option>`).join('')}
+            </optgroup>
+            <optgroup label="Calendar">
+              <option value="this-month">This month</option>
+              <option value="last-month">Last month</option>
+              <option value="ytd">Year to date</option>
+              <option value="last-7">Last 7 days</option>
+              <option value="last-30">Last 30 days</option>
+            </optgroup>
           </select>
           <select class="form-control" id="pr-hotel">
             <option value="">All Hotels</option>
@@ -1430,7 +1446,7 @@ async function renderPayroll() {
           <button class="btn btn-secondary" id="pr-csv" style="display:none">Export CSV</button>
           <button class="btn btn-secondary" id="pr-xlsx" style="display:none">Export Excel</button>
         </div>
-        <p class="text-muted text-sm mt12">Shows only manager-validated shifts. Filter by hotel and/or position to scope the report.</p>
+        <p class="text-muted text-sm mt12">Pick any start and end date — or use the quick periods dropdown. Shows only manager-validated shifts.</p>
       </div>
     </div>
     <div id="pr-output"></div>`;
@@ -1438,11 +1454,78 @@ async function renderPayroll() {
   document.getElementById('pr-load').addEventListener('click', loadPayroll);
   document.getElementById('pr-csv').addEventListener('click',  exportPayrollCSV);
   document.getElementById('pr-xlsx').addEventListener('click', exportPayrollXLSX);
+
+  // Preset dropdown pre-fills the two date inputs.
+  document.getElementById('pr-preset').addEventListener('change', e => {
+    const v = e.target.value;
+    if (!v) return;
+    const r = computePayrollPreset(v);
+    if (r) {
+      document.getElementById('pr-from').value = r.from;
+      document.getElementById('pr-to').value   = r.to;
+    }
+  });
+  // If the user manually edits a date, drop the preset selection so the UI
+  // doesn't pretend a preset is still active.
+  ['pr-from', 'pr-to'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => {
+      document.getElementById('pr-preset').value = '';
+    });
+  });
+
   if (cur) loadPayroll();
 }
 
+// Format a Date as YYYY-MM-DD using LOCAL time (avoids the toISOString UTC shift).
+function ymdLocal(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function computePayrollPreset(v) {
+  // Pay-period preset is encoded as "YYYY-MM-DD|YYYY-MM-DD".
+  if (v.includes('|')) {
+    const [from, to] = v.split('|');
+    return { from, to };
+  }
+  const today = new Date();
+  switch (v) {
+    case 'this-month':
+      return { from: ymdLocal(new Date(today.getFullYear(), today.getMonth(), 1)),
+               to:   ymdLocal(today) };
+    case 'last-month': {
+      const first = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const last  = new Date(today.getFullYear(), today.getMonth(), 0);
+      return { from: ymdLocal(first), to: ymdLocal(last) };
+    }
+    case 'ytd':
+      return { from: ymdLocal(new Date(today.getFullYear(), 0, 1)),
+               to:   ymdLocal(today) };
+    case 'last-7': {
+      const d = new Date(today); d.setDate(d.getDate() - 6);
+      return { from: ymdLocal(d), to: ymdLocal(today) };
+    }
+    case 'last-30': {
+      const d = new Date(today); d.setDate(d.getDate() - 29);
+      return { from: ymdLocal(d), to: ymdLocal(today) };
+    }
+  }
+  return null;
+}
+
 async function loadPayroll() {
-  const [from, to] = document.getElementById('pr-period').value.split('|');
+  const from = document.getElementById('pr-from').value;
+  const to   = document.getElementById('pr-to').value;
+  if (!from || !to) {
+    alert('Please pick both a start and an end date.');
+    return;
+  }
+  if (from > to) {
+    alert('Start date must be on or before end date.');
+    return;
+  }
   const hotelId    = document.getElementById('pr-hotel').value;
   const position   = document.getElementById('pr-position').value;
 

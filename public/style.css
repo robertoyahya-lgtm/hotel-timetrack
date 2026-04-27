@@ -853,6 +853,14 @@ select.form-control {
 }
 .filters .form-control { min-width: 160px; }
 .filters .f-search { flex: 1; min-width: 220px; }
+.filters .date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.filters .date-range .form-control { min-width: 150px; }
+.filters .date-range label { white-space: nowrap; }
 
 /* ════════════════════════════════════════════════════════════════════════
    MODAL
