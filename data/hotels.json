@@ -1,0 +1,27 @@
+[
+  {
+    "name": "The Cove",
+    "subUnits": []
+  },
+  {
+    "name": "Maison de Paris",
+    "subUnits": []
+  },
+  {
+    "name": "Les Chambres Petit Prince",
+    "subUnits": [
+      "Mystral",
+      "The Mile End Parc",
+      "Victoria",
+      "The Little Prince Rooms"
+    ]
+  },
+  {
+    "name": "The Alexander",
+    "subUnits": []
+  },
+  {
+    "name": "Hotel Monroe",
+    "subUnits": []
+  }
+]
