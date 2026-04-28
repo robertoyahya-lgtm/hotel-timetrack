@@ -198,12 +198,22 @@ app.delete('/api/positions/:name', auth('admin'), (req, res) => {
   res.json({ positions });
 });
 
-app.post('/api/users', auth('admin'), async (req, res) => {
-  const { name, email, password, role, hotelId, subUnit, position } = req.body;
+// Roles a manager is allowed to create or assign. Admins have no such limit.
+const MANAGER_ASSIGNABLE_ROLES = ['employee', 'supervisor'];
+
+app.post('/api/users', auth('admin', 'manager'), async (req, res) => {
+  let { name, email, password, role, hotelId, subUnit, position } = req.body;
   if (!name || !email || !password || !role)
     return res.status(400).json({ error: 'name, email, password and role are required' });
   if (!VALID_ROLES.includes(role))
     return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
+
+  // Manager-scope: can only create employees or supervisors at their own hotel.
+  if (req.user.role === 'manager') {
+    if (!MANAGER_ASSIGNABLE_ROLES.includes(role))
+      return res.status(403).json({ error: 'Managers can only create employees or supervisors.' });
+    hotelId = req.user.hotelId;   // pin to manager's hotel
+  }
 
   // Position is required for employees so payroll reports always have a row.
   // For admin/accounting/manager/supervisor it's optional and defaults to null.
@@ -244,12 +254,31 @@ app.post('/api/users', auth('admin'), async (req, res) => {
   res.status(201).json(omit(user, 'password'));
 });
 
-app.put('/api/users/:id', auth('admin'), async (req, res) => {
+app.put('/api/users/:id', auth('admin', 'manager'), async (req, res) => {
   const users = db.read('users.json');
   const idx   = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User not found' });
 
+  const target  = users[idx];
   const updates = { ...req.body };
+
+  // Manager-scope: can only edit employees/supervisors at their own hotel,
+  // can never edit admins/managers/accounting, can't change role outside the
+  // employee/supervisor pair, and can't move users to another hotel.
+  if (req.user.role === 'manager') {
+    if (target.hotelId !== req.user.hotelId)
+      return res.status(403).json({ error: 'Managers can only edit users in their own hotel.' });
+    if (!MANAGER_ASSIGNABLE_ROLES.includes(target.role))
+      return res.status(403).json({ error: 'Managers cannot edit admins, managers or accounting users.' });
+    if (updates.role && !MANAGER_ASSIGNABLE_ROLES.includes(updates.role))
+      return res.status(403).json({ error: 'Managers can only assign roles: employee or supervisor.' });
+    if (Object.prototype.hasOwnProperty.call(updates, 'hotelId')
+        && updates.hotelId && updates.hotelId !== req.user.hotelId)
+      return res.status(403).json({ error: 'Managers cannot move a user to another hotel.' });
+    // Pin to the manager's hotel regardless of body.
+    updates.hotelId = req.user.hotelId;
+  }
+
   if (updates.role && !VALID_ROLES.includes(updates.role))
     return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
 
@@ -269,29 +298,66 @@ app.put('/api/users/:id', auth('admin'), async (req, res) => {
   } else {
     delete updates.password;
   }
-  if (updates.hotelId) {
-    const hotel = db.read('hotels.json').find(h => h.id === updates.hotelId);
-    updates.hotelName = hotel?.name || null;
+
+  // Keep hotelName perfectly in sync with hotelId, including when the caller
+  // explicitly clears the hotel (hotelId: null/'') — previously hotelName was
+  // left dangling, leaving inconsistent state in dashboards and exports.
+  if (Object.prototype.hasOwnProperty.call(updates, 'hotelId')) {
+    if (updates.hotelId) {
+      const hotel = db.read('hotels.json').find(h => h.id === updates.hotelId);
+      if (!hotel) return res.status(400).json({ error: 'Unknown hotel' });
+      updates.hotelName = hotel.name;
+      // If the new hotel doesn't include the previous sub-unit, clear it
+      // unless the caller is sending a fresh subUnit value.
+      if (!Object.prototype.hasOwnProperty.call(updates, 'subUnit')) {
+        const subs = hotel.subUnits || [];
+        if (target.subUnit && !subs.includes(target.subUnit)) updates.subUnit = null;
+      }
+    } else {
+      updates.hotelId   = null;
+      updates.hotelName = null;
+      // Sub-unit can't exist without a hotel.
+      if (!Object.prototype.hasOwnProperty.call(updates, 'subUnit')) updates.subUnit = null;
+    }
   }
+
+  // Normalise empty subUnit to null so reports don't show ""
+  if (Object.prototype.hasOwnProperty.call(updates, 'subUnit') && updates.subUnit === '')
+    updates.subUnit = null;
+
   users[idx] = { ...users[idx], ...updates };
   db.write('users.json', users);
   res.json(omit(users[idx], 'password'));
 });
 
-app.put('/api/users/:id/deactivate', auth('admin'), (req, res) => {
+// Helper: managers can only flip status on employees/supervisors at own hotel.
+function canModifyUser(actor, target) {
+  if (actor.role === 'admin') return true;
+  if (actor.role === 'manager') {
+    return target.hotelId === actor.hotelId
+        && MANAGER_ASSIGNABLE_ROLES.includes(target.role);
+  }
+  return false;
+}
+
+app.put('/api/users/:id/deactivate', auth('admin', 'manager'), (req, res) => {
   const users = db.read('users.json');
   const idx   = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User not found' });
+  if (!canModifyUser(req.user, users[idx]))
+    return res.status(403).json({ error: 'Insufficient permissions' });
   users[idx].active = false;
   users[idx].deactivatedAt = new Date().toISOString();
   db.write('users.json', users);
   res.json({ ok: true });
 });
 
-app.put('/api/users/:id/activate', auth('admin'), (req, res) => {
+app.put('/api/users/:id/activate', auth('admin', 'manager'), (req, res) => {
   const users = db.read('users.json');
   const idx   = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User not found' });
+  if (!canModifyUser(req.user, users[idx]))
+    return res.status(403).json({ error: 'Insufficient permissions' });
   users[idx].active = true;
   users[idx].deactivatedAt = null;
   db.write('users.json', users);
@@ -327,23 +393,35 @@ app.get('/api/shifts', auth(), (req, res) => {
   res.json(shifts);
 });
 
-// Clock in
-app.post('/api/shifts/start', auth('employee'), (req, res) => {
+// Clock in — open to anyone who actually works on-site (employees + the
+// floor leadership: managers + supervisors). Admin & accounting are
+// office/back-office roles and are intentionally excluded.
+app.post('/api/shifts/start', auth('employee', 'manager', 'supervisor'), (req, res) => {
   const shifts = db.read('shifts.json');
   const { user } = req;
+
+  // Need a hotel to anchor the shift. Without it payroll/dashboards can't group.
+  const fresh = db.read('users.json').find(u => u.id === user.id);
+  const hotelId   = fresh?.hotelId   || user.hotelId   || null;
+  const hotelName = fresh?.hotelName || user.hotelName || null;
+  const subUnit   = fresh?.subUnit   || user.subUnit   || null;
+  if (!hotelId) return res.status(400).json({
+    error: 'Cannot clock in: no hotel is assigned to your account. Ask an admin to assign you a hotel.'
+  });
 
   const already = shifts.find(s => s.userId === user.id && s.status === 'active');
   if (already) return res.status(409).json({ error: 'You are already clocked in', shift: already });
 
   // Resolve position from the user record (JWT may be stale if admin re-tagged
-  // the employee mid-session). Fall back to "Unassigned" so payroll always groups.
-  const fresh = db.read('users.json').find(u => u.id === user.id);
-  const stampPosition = fresh?.position || user.position || 'Unassigned';
+  // the employee mid-session). Fall back: managers & supervisors don't always
+  // have a position in the admin list, so use a role-based default.
+  const fallbackByRole = { manager: 'Manager', supervisor: 'Supervisor' };
+  const stampPosition  = fresh?.position || user.position || fallbackByRole[user.role] || 'Unassigned';
 
   const shift = {
     id: uuidv4(),
-    userId: user.id,     userName: user.name,
-    hotelId: user.hotelId, hotelName: user.hotelName, subUnit: user.subUnit,
+    userId: user.id,     userName: fresh?.name || user.name,
+    hotelId, hotelName, subUnit,
     position: stampPosition,
     startTime: new Date().toISOString(),
     endTime: null, totalMinutes: null,
@@ -359,7 +437,7 @@ app.post('/api/shifts/start', auth('employee'), (req, res) => {
 });
 
 // Clock out
-app.post('/api/shifts/end', auth('employee'), (req, res) => {
+app.post('/api/shifts/end', auth('employee', 'manager', 'supervisor'), (req, res) => {
   const shifts = db.read('shifts.json');
   const idx = shifts.findIndex(s => s.userId === req.user.id && s.status === 'active');
   if (idx === -1) return res.status(404).json({ error: 'No active shift found' });
@@ -645,7 +723,7 @@ app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, re
 });
 
 // Excel export
-app.get('/api/payroll/export/xlsx', auth('accounting', 'admin'), async (req, res) => {
+app.get('/api/payroll/export/xlsx', auth('accounting', 'admin', 'manager'), async (req, res) => {
   const ExcelJS = require('exceljs');
   const { from, to, hotelId, position } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
@@ -654,6 +732,8 @@ app.get('/api/payroll/export/xlsx', auth('accounting', 'admin'), async (req, res
   const usersById = Object.fromEntries(users.map(u => [u.id, u]));
   let shifts = db.read('shifts.json').filter(s => s.status === 'validated' && s.endTime);
   shifts = shifts.filter(s => s.startTime >= from && s.startTime <= to + 'T23:59:59.999Z');
+  // Managers can only export their own hotel's payroll.
+  if (req.user.role === 'manager') shifts = shifts.filter(s => s.hotelId === req.user.hotelId);
   if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
   if (position) shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
   shifts.sort((a, b) =>
@@ -749,7 +829,7 @@ app.get('/api/payroll/export/xlsx', auth('accounting', 'admin'), async (req, res
 });
 
 // CSV export
-app.get('/api/payroll/export/csv', auth('accounting', 'admin'), (req, res) => {
+app.get('/api/payroll/export/csv', auth('accounting', 'admin', 'manager'), (req, res) => {
   const { from, to, hotelId, position } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
@@ -757,6 +837,8 @@ app.get('/api/payroll/export/csv', auth('accounting', 'admin'), (req, res) => {
   const usersById = Object.fromEntries(users.map(u => [u.id, u]));
   let shifts = db.read('shifts.json').filter(s => s.status === 'validated' && s.endTime);
   shifts = shifts.filter(s => s.startTime >= from && s.startTime <= to + 'T23:59:59.999Z');
+  // Managers can only export their own hotel's payroll.
+  if (req.user.role === 'manager') shifts = shifts.filter(s => s.hotelId === req.user.hotelId);
   if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
   if (position) shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
   shifts.sort((a, b) =>
@@ -798,9 +880,26 @@ app.get('/api/dashboard', auth(), (req, res) => {
   const today   = new Date().toISOString().slice(0, 10);
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
 
+  const activeShifts = shifts.filter(s => s.status === 'active');
+
+  // Per-hotel live count of who's currently clocked in. Scoped to what the
+  // caller is allowed to see: admin/accounting see every hotel, manager and
+  // supervisor see only their own, employees don't get this widget.
+  const allHotels = db.read('hotels.json');
+  let visibleHotels;
+  if (role === 'admin' || role === 'accounting') visibleHotels = allHotels;
+  else if (role === 'manager' || role === 'supervisor') visibleHotels = allHotels.filter(h => h.id === hotelId);
+  else visibleHotels = [];
+  const activeByHotel = visibleHotels.map(h => ({
+    hotelId:   h.id,
+    hotelName: h.name,
+    count:     activeShifts.filter(s => s.hotelId === h.id).length
+  })).sort((a, b) => b.count - a.count || a.hotelName.localeCompare(b.hotelName));
+
   res.json({
-    activeNow:    shifts.filter(s => s.status === 'active').length,
-    activeShifts: shifts.filter(s => s.status === 'active'),
+    activeNow:    activeShifts.length,
+    activeShifts,
+    activeByHotel,
     todayCount:   shifts.filter(s => s.startTime.startsWith(today)).length,
     pendingVal:   shifts.filter(s => s.status === 'completed').length,
     weekShifts:   shifts.filter(s => s.startTime >= weekAgo && s.endTime).length,

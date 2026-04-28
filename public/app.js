@@ -61,16 +61,21 @@ const NAV = {
   manager: [
     { route: 'overview',    label: 'Overview' },
     { route: 'shifts',      label: 'Shifts' },
+    { route: 'employees',   label: 'Employees' },
     { route: 'validate',    label: 'Validate Hours' },
     { route: 'corrections', label: 'Corrections', badge: 'pending_corrections' },
+    { route: 'payroll',     label: 'Payroll' },
+    { route: 'clock',       label: 'Clock In / Out' },
     { route: 'account',     label: 'My Account' },
   ],
   // Supervisor: read-only view of one hotel — see employees and their hours,
   // but cannot edit, validate, approve corrections, or access payroll.
+  // They CAN clock themselves in/out for their own shifts.
   supervisor: [
     { route: 'overview',    label: 'Overview' },
     { route: 'shifts',      label: 'Shifts' },
     { route: 'employees',   label: 'Employees' },
+    { route: 'clock',       label: 'Clock In / Out' },
     { route: 'account',     label: 'My Account' },
   ],
   admin: [
@@ -555,10 +560,20 @@ async function loadMyCorrections() {
 // MANAGER PAGES
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Per-hotel filter state for the Currently On Shift table.
+let overviewDashboard = null;
+let overviewHotelFilter = null;
+
 async function renderOverview(user) {
   const body = document.getElementById('page-body');
   try {
     const d = await GET('/api/dashboard');
+    overviewDashboard = d;
+    // Clear stale filter if the chosen hotel no longer has any shifts visible.
+    if (overviewHotelFilter && !(d.activeByHotel || []).some(h => h.hotelId === overviewHotelFilter)) {
+      overviewHotelFilter = null;
+    }
+
     body.innerHTML = `
       <div class="stat-grid">
         <div class="stat-card green"><div class="stat-value">${d.activeNow}</div><div class="stat-label">On Shift Now</div></div>
@@ -567,21 +582,32 @@ async function renderOverview(user) {
         <div class="stat-card"><div class="stat-value">${fmtDurH(d.weekMinutes)}</div><div class="stat-label">This Week</div></div>
       </div>
 
+      ${(d.activeByHotel && d.activeByHotel.length > 0) ? `
+        <div class="card mb12">
+          <div class="card-head">
+            <span>Active by Property${d.activeNow > 0 ? ' <span class="dot-live"></span>' : ''}</span>
+            <span class="text-muted text-sm">Click a property to filter the list below</span>
+          </div>
+          <div class="hotel-active-grid" id="ov-hotel-grid">
+            <div class="hotel-active-chip ${overviewHotelFilter === null ? 'is-active' : ''}" onclick="setOverviewHotelFilter(null)">
+              <span class="hotel-active-name">All Properties</span>
+              <span class="hotel-active-count">${d.activeNow}</span>
+            </div>
+            ${d.activeByHotel.map(h => `
+              <div class="hotel-active-chip ${overviewHotelFilter === h.hotelId ? 'is-active' : ''} ${h.count > 0 ? 'has-active' : ''}"
+                   onclick="setOverviewHotelFilter('${h.hotelId}')">
+                <span class="hotel-active-name">${esc(h.hotelName)}</span>
+                <span class="hotel-active-count">${h.count}</span>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+
       <div class="card mb12">
-        <div class="card-head">Currently On Shift${d.activeShifts.length > 0 ? ' <span class="dot-live"></span>' : ''}</div>
-        ${d.activeShifts.length === 0
-          ? '<div class="empty-state text-muted" style="padding:20px">Nobody currently on shift.</div>'
-          : `<div class="table-wrap"><table>
-              <thead><tr><th>Employee</th><th>Hotel</th><th>Sub-unit</th><th>Started</th></tr></thead>
-              <tbody>${d.activeShifts.map(s => `
-                <tr>
-                  <td class="td-name">${esc(s.userName)}</td>
-                  <td>${esc(s.hotelName)}</td>
-                  <td class="text-muted">${esc(s.subUnit || '—')}</td>
-                  <td>${fmtTime(s.startTime)}</td>
-                </tr>`).join('')}
-              </tbody>
-            </table></div>`}
+        <div class="card-head">
+          <span>Currently On Shift${d.activeShifts.length > 0 ? ' <span class="dot-live"></span>' : ''}</span>
+          <span class="text-muted text-sm" id="ov-active-meta"></span>
+        </div>
+        <div id="ov-active-body"></div>
       </div>
 
       ${d.pendingCorrections > 0 ? `
@@ -590,9 +616,61 @@ async function renderOverview(user) {
           <button class="btn btn-sm btn-warning" style="margin-left:12px" onclick="navigate('corrections')">Review</button>
         </div>` : ''}
     `;
+    renderOverviewActiveTable();
   } catch {
     body.innerHTML = '<div class="empty-state text-muted">Error loading overview.</div>';
   }
+}
+
+// Renders only the Currently On Shift table body — keeps the rest of the page
+// stable when the user toggles the per-hotel filter.
+function renderOverviewActiveTable() {
+  const d = overviewDashboard;
+  if (!d) return;
+  const bodyEl = document.getElementById('ov-active-body');
+  const metaEl = document.getElementById('ov-active-meta');
+  if (!bodyEl) return;
+
+  const rows = overviewHotelFilter
+    ? d.activeShifts.filter(s => s.hotelId === overviewHotelFilter)
+    : d.activeShifts;
+
+  if (metaEl) {
+    if (overviewHotelFilter) {
+      const h = (d.activeByHotel || []).find(x => x.hotelId === overviewHotelFilter);
+      metaEl.textContent = `${rows.length} on shift at ${h ? h.hotelName : 'this property'}`;
+    } else {
+      metaEl.textContent = '';
+    }
+  }
+
+  bodyEl.innerHTML = rows.length === 0
+    ? `<div class="empty-state text-muted" style="padding:20px">${overviewHotelFilter ? 'Nobody on shift at this property right now.' : 'Nobody currently on shift.'}</div>`
+    : `<div class="table-wrap"><table>
+        <thead><tr><th>Employee</th><th>Position</th><th>Hotel</th><th>Sub-unit</th><th>Started</th></tr></thead>
+        <tbody>${rows.map(s => `
+          <tr>
+            <td class="td-name">${esc(s.userName)}</td>
+            <td>${s.position
+              ? `<span class="badge badge-position">${esc(s.position)}</span>`
+              : '<span class="text-muted">—</span>'}</td>
+            <td>${esc(s.hotelName || '—')}</td>
+            <td class="text-muted">${esc(s.subUnit || '—')}</td>
+            <td>${fmtTime(s.startTime)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+}
+
+function setOverviewHotelFilter(hotelId) {
+  overviewHotelFilter = (hotelId === overviewHotelFilter) ? null : hotelId;
+  // Update chip active class without re-rendering the whole page.
+  document.querySelectorAll('.hotel-active-chip').forEach(c => c.classList.remove('is-active'));
+  const target = overviewHotelFilter
+    ? document.querySelector(`.hotel-active-chip[onclick="setOverviewHotelFilter('${overviewHotelFilter}')"]`)
+    : document.querySelector('.hotel-active-chip[onclick="setOverviewHotelFilter(null)"]');
+  if (target) target.classList.add('is-active');
+  renderOverviewActiveTable();
 }
 
 async function renderShifts(user) {
@@ -660,6 +738,7 @@ async function loadShiftsTable(user) {
       <thead>
         <tr>
           <th>Employee</th>
+          <th>Position</th>
           ${user.role === 'admin' ? '<th>Hotel</th>' : ''}
           <th>Sub-unit</th><th>Date</th><th>Start</th><th>End</th><th>Duration</th><th>Status</th>
           ${canEditShifts ? '<th>Actions</th>' : ''}
@@ -669,6 +748,9 @@ async function loadShiftsTable(user) {
         ${shifts.map(s => `
           <tr>
             <td><div class="td-name">${esc(s.userName)}</div>${s.isCorrection ? '<div class="td-sub">Correction</div>' : ''}</td>
+            <td>${s.position
+              ? `<span class="badge badge-position">${esc(s.position)}</span>`
+              : '<span class="text-muted">—</span>'}</td>
             ${user.role === 'admin' ? `<td>${esc(s.hotelName)}</td>` : ''}
             <td class="text-muted">${esc(s.subUnit || '—')}</td>
             <td>${fmtDate(s.startTime)}</td>
@@ -1023,14 +1105,17 @@ async function renderEmployees() {
   const body   = document.getElementById('page-body');
   const user   = getUser();
   const hotels = await GET('/api/hotels');
-  const canManage = user.role === 'admin';
+  // Admin & manager can manage employees. Manager-scope is enforced server-side
+  // (own hotel only, employees & supervisors only).
+  const canManage    = user.role === 'admin' || user.role === 'manager';
+  const isAdmin      = user.role === 'admin';
 
   // Positions are admin-managed; admin/accounting/manager can read.
   let positions = [];
   try { positions = (await GET('/api/positions')).positions || []; } catch {}
 
   document.getElementById('topbar-actions').innerHTML = canManage
-    ? `<button class="btn btn-secondary" onclick="openManagePositions()">Manage Positions</button>
+    ? `${isAdmin ? '<button class="btn btn-secondary" onclick="openManagePositions()">Manage Positions</button>' : ''}
        <button class="btn btn-primary" onclick="openAddEmployee()">Add Employee</button>`
     : '';
 
@@ -1074,7 +1159,8 @@ let allEmployees = [];
 
 async function loadEmpTable(hotels) {
   const me         = getUser();
-  const canManage  = me.role === 'admin';
+  // Managers can edit/deactivate their own hotel's employees (server enforces scope).
+  const canManage  = me.role === 'admin' || me.role === 'manager';
   const search     = document.getElementById('emp-search').value.toLowerCase();
   const hotelFil   = document.getElementById('emp-hotel-filter').value;
   const roleFil    = document.getElementById('emp-role-filter').value;
@@ -1128,9 +1214,40 @@ async function loadEmpTable(hotels) {
 }
 
 async function openAddEmployee() {
-  const hotels = await GET('/api/hotels');
+  const me      = getUser();
+  const isAdmin = me.role === 'admin';
+  const hotels  = await GET('/api/hotels');
+  // Manager scope: hotel is forced to their own, role choice is restricted.
+  const myHotel = hotels.find(h => h.id === me.hotelId);
   let positions = [];
   try { positions = (await GET('/api/positions')).positions || []; } catch {}
+
+  const roleOptions = isAdmin
+    ? `<option value="employee">Employee</option>
+       <option value="manager">Manager</option>
+       <option value="supervisor">Supervisor</option>
+       <option value="accounting">Accounting</option>
+       <option value="admin">Admin</option>`
+    : `<option value="employee">Employee</option>
+       <option value="supervisor">Supervisor</option>`;
+
+  const hotelField = isAdmin
+    ? `<div class="form-group"><label>Hotel</label>
+        <select class="form-control" id="ae-hotel" onchange="updateSubUnits(this,'ae-subunit')">
+          <option value="">— No hotel —</option>
+          ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits || [])}'>${esc(h.name)}</option>`).join('')}
+        </select></div>
+       <div class="form-group"><label>Sub-unit</label>
+        <select class="form-control" id="ae-subunit"><option value="">— None —</option></select></div>`
+    : `<div class="form-group"><label>Hotel</label>
+        <input class="form-control" id="ae-hotel-display" value="${esc(myHotel?.name || '—')}" disabled>
+        <input type="hidden" id="ae-hotel" value="${esc(me.hotelId || '')}"></div>
+       <div class="form-group"><label>Sub-unit</label>
+        <select class="form-control" id="ae-subunit">
+          <option value="">— None —</option>
+          ${(myHotel?.subUnits || []).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+        </select></div>`;
+
   showModal(`
     <div class="modal-head">
       <div class="modal-head-title">Add Employee</div>
@@ -1149,24 +1266,14 @@ async function openAddEmployee() {
           <input class="form-control" type="password" id="ae-pw" placeholder="They can change it in My Account" autocomplete="new-password"></div>
         <div class="form-group"><label>Role *</label>
           <select class="form-control" id="ae-role" onchange="onRoleChange('ae')">
-            <option value="employee">Employee</option>
-            <option value="manager">Manager</option>
-            <option value="supervisor">Supervisor</option>
-            <option value="accounting">Accounting</option>
-            <option value="admin">Admin</option>
+            ${roleOptions}
           </select></div>
         <div class="form-group"><label id="ae-position-lbl">Position *</label>
           <select class="form-control" id="ae-position">
             <option value="">— Select a position —</option>
             ${positions.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
           </select></div>
-        <div class="form-group"><label>Hotel</label>
-          <select class="form-control" id="ae-hotel" onchange="updateSubUnits(this,'ae-subunit')">
-            <option value="">— No hotel —</option>
-            ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits)}'>${esc(h.name)}</option>`).join('')}
-          </select></div>
-        <div class="form-group"><label>Sub-unit</label>
-          <select class="form-control" id="ae-subunit"><option value="">— None —</option></select></div>
+        ${hotelField}
         <div class="form-group span2"><label>Status</label>
           <select class="form-control" id="ae-active">
             <option value="true">Active</option>
@@ -1220,13 +1327,46 @@ async function saveNewEmployee() {
 }
 
 async function openEditEmployee(id) {
-  const hotels = await GET('/api/hotels');
+  const me      = getUser();
+  const isAdmin = me.role === 'admin';
+  const hotels  = await GET('/api/hotels');
   let positions = [];
   try { positions = (await GET('/api/positions')).positions || []; } catch {}
   const u = allEmployees.find(x => x.id === id);
   if (!u) return;
-  const hotel = hotels.find(h => h.id === u.hotelId);
+  const hotel    = hotels.find(h => h.id === u.hotelId);
   const subUnits = hotel?.subUnits || [];
+
+  // Role choices — admin sees all; manager sees only employee/supervisor.
+  const roleOptions = isAdmin
+    ? `<option value="employee"   ${u.role==='employee'  ?'selected':''}>Employee</option>
+       <option value="manager"    ${u.role==='manager'   ?'selected':''}>Manager</option>
+       <option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option>
+       <option value="accounting" ${u.role==='accounting'?'selected':''}>Accounting</option>
+       <option value="admin"      ${u.role==='admin'     ?'selected':''}>Admin</option>`
+    : `<option value="employee"   ${u.role==='employee'  ?'selected':''}>Employee</option>
+       <option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option>`;
+
+  // Hotel field — admin can move users between hotels; manager is pinned.
+  const hotelField = isAdmin
+    ? `<div class="form-group"><label>Hotel</label>
+        <select class="form-control" id="ee-hotel" onchange="updateSubUnits(this,'ee-subunit')">
+          <option value="">— No hotel —</option>
+          ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits || [])}' ${h.id===u.hotelId?'selected':''}>${esc(h.name)}</option>`).join('')}
+        </select></div>
+       <div class="form-group"><label>Sub-unit</label>
+        <select class="form-control" id="ee-subunit">
+          <option value="">— None —</option>
+          ${subUnits.map(s => `<option value="${esc(s)}" ${s===u.subUnit?'selected':''}>${esc(s)}</option>`).join('')}
+        </select></div>`
+    : `<div class="form-group"><label>Hotel</label>
+        <input class="form-control" id="ee-hotel-display" value="${esc(hotel?.name || me.hotelName || '—')}" disabled>
+        <input type="hidden" id="ee-hotel" value="${esc(me.hotelId || u.hotelId || '')}"></div>
+       <div class="form-group"><label>Sub-unit</label>
+        <select class="form-control" id="ee-subunit">
+          <option value="">— None —</option>
+          ${(subUnits.length ? subUnits : (hotels.find(h => h.id === me.hotelId)?.subUnits || [])).map(s => `<option value="${esc(s)}" ${s===u.subUnit?'selected':''}>${esc(s)}</option>`).join('')}
+        </select></div>`;
 
   showModal(`
     <div class="modal-head">
@@ -1243,11 +1383,7 @@ async function openEditEmployee(id) {
           <input class="form-control" type="password" id="ee-pw" placeholder="Leave blank to keep current" autocomplete="new-password"></div>
         <div class="form-group"><label>Role *</label>
           <select class="form-control" id="ee-role" onchange="onRoleChange('ee')">
-            <option value="employee"   ${u.role==='employee'?'selected':''}>Employee</option>
-            <option value="manager"    ${u.role==='manager'?'selected':''}>Manager</option>
-            <option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option>
-            <option value="accounting" ${u.role==='accounting'?'selected':''}>Accounting</option>
-            <option value="admin"      ${u.role==='admin'?'selected':''}>Admin</option>
+            ${roleOptions}
           </select></div>
         <div class="form-group"><label id="ee-position-lbl">${u.role==='employee'?'Position *':'Position'}</label>
           <select class="form-control" id="ee-position">
@@ -1259,16 +1395,7 @@ async function openEditEmployee(id) {
             <option value="true"  ${u.active !== false ? 'selected':''}>Active</option>
             <option value="false" ${u.active === false  ? 'selected':''}>Inactive</option>
           </select></div>
-        <div class="form-group"><label>Hotel</label>
-          <select class="form-control" id="ee-hotel" onchange="updateSubUnits(this,'ee-subunit')">
-            <option value="">— No hotel —</option>
-            ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits)}' ${h.id===u.hotelId?'selected':''}>${esc(h.name)}</option>`).join('')}
-          </select></div>
-        <div class="form-group"><label>Sub-unit</label>
-          <select class="form-control" id="ee-subunit">
-            <option value="">— None —</option>
-            ${subUnits.map(s => `<option value="${esc(s)}" ${s===u.subUnit?'selected':''}>${esc(s)}</option>`).join('')}
-          </select></div>
+        ${hotelField}
       </div>
     </div>
     <div class="modal-foot">
@@ -1405,7 +1532,13 @@ let payrollParams = {};
 
 async function renderPayroll() {
   const body    = document.getElementById('page-body');
-  const periods = await GET('/api/payroll/periods');
+  const periodsRaw = await GET('/api/payroll/periods');
+  // Normalise the period start/end to YYYY-MM-DD so they can populate
+  // <input type="date"> directly. The API returns full ISO timestamps.
+  const dateOnly = iso => (iso || '').slice(0, 10);
+  const periods  = periodsRaw.map(p => ({
+    ...p, start: dateOnly(p.start), end: dateOnly(p.end)
+  }));
   const hotels  = await GET('/api/hotels');
   let positions = [];
   try { positions = (await GET('/api/positions')).positions || []; } catch {}
