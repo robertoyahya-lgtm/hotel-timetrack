@@ -417,7 +417,7 @@ app.get('/api/shifts', auth(), (req, res) => {
 // ── Geolocation helpers ──────────────────────────────────────────────────────
 // Returns the distance in metres between two GPS coordinates (Haversine).
 function haversineMetres(lat1, lng1, lat2, lng2) {
-  const R  = 6371000; // Earth radius in metres
+  const R  = 6371000;
   const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
   const Δφ = (lat2 - lat1) * Math.PI / 180;
   const Δλ = (lng2 - lng1) * Math.PI / 180;
@@ -425,30 +425,78 @@ function haversineMetres(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Returns null (OK) or an error object { error, distance, radius } if outside the allowed radius.
-function checkGeoFence(clientLat, clientLng, hotel, subUnit) {
-  if (clientLat == null || clientLng == null) return null; // no GPS sent → skip
+/**
+ * Smart geo verdict — never blocks, always allows clock-in.
+ * Returns an object describing where the employee actually is:
+ *
+ *  type 'no_gps'           → client didn't send coordinates (GPS unavailable)
+ *  type 'no_coords'        → hotel has no coordinates configured
+ *  type 'ok'               → at assigned property ✅
+ *  type 'roaming'          → LCPP employee at another LCPP sub-unit (expected) ✅
+ *  type 'off_site'         → at a different known property ⚠️ (log + flag)
+ *  type 'unknown_location' → not near any property ⚠️ (log + flag)
+ */
+function computeGeoVerdict(clientLat, clientLng, hotel, subUnit, allHotels) {
+  if (clientLat == null || clientLng == null)
+    return { type: 'no_gps' };
 
-  let coords = null;
-  let locationName = hotel.name;
-
-  if (hotel.isGroup && subUnit) {
-    coords = hotel.subUnitCoordinates?.[subUnit] || null;
-    if (coords) locationName = subUnit;
+  // Resolve the assigned coordinates (sub-unit first for group hotels)
+  let assignedCoords = null;
+  let assignedLabel  = hotel.name;
+  if (hotel.isGroup && subUnit && hotel.subUnitCoordinates?.[subUnit]) {
+    assignedCoords = hotel.subUnitCoordinates[subUnit];
+    assignedLabel  = subUnit;
+  } else if (!hotel.isGroup && hotel.coordinates) {
+    assignedCoords = hotel.coordinates;
   }
-  if (!coords) coords = hotel.coordinates || null;
-  if (!coords) return null; // no coordinates configured for this hotel → skip
+  if (!assignedCoords)
+    return { type: 'no_coords' };
 
-  const dist   = haversineMetres(clientLat, clientLng, coords.lat, coords.lng);
-  const radius = coords.radius || 200;
-  if (dist <= radius) return null; // inside fence — OK
+  const distToAssigned = Math.round(haversineMetres(clientLat, clientLng, assignedCoords.lat, assignedCoords.lng));
+  const radius         = assignedCoords.radius || 200;
 
-  return {
-    error:    `Vous êtes à ${Math.round(dist)} m de ${locationName}. Le pointage est autorisé uniquement dans un rayon de ${radius} m.`,
-    distance: Math.round(dist),
-    radius,
-    location: locationName,
-  };
+  // ── At assigned property ──────────────────────────────────────────────────
+  if (distToAssigned <= radius)
+    return { type: 'ok', distance: distToAssigned, assignedLabel };
+
+  // ── LCPP roaming: employee moves freely between all LCPP sub-units ────────
+  if (hotel.isGroup && hotel.subUnitCoordinates) {
+    for (const [suName, suC] of Object.entries(hotel.subUnitCoordinates)) {
+      if (suName === subUnit) continue; // already checked above
+      const d = Math.round(haversineMetres(clientLat, clientLng, suC.lat, suC.lng));
+      if (d <= (suC.radius || 200))
+        return { type: 'roaming', distance: distToAssigned, assignedLabel, detectedSubUnit: suName };
+    }
+  }
+
+  // ── At a different known hotel/sub-unit ───────────────────────────────────
+  let nearest = null, nearestDist = Infinity;
+  for (const h of (allHotels || [])) {
+    if (h.id === hotel.id) continue; // already checked
+    if (h.isGroup && h.subUnitCoordinates) {
+      for (const [suName, suC] of Object.entries(h.subUnitCoordinates)) {
+        const d = Math.round(haversineMetres(clientLat, clientLng, suC.lat, suC.lng));
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearest = { name: `${h.name} — ${suName}`, id: h.id, r: suC.radius || 200 };
+        }
+      }
+    } else if (h.coordinates) {
+      const d = Math.round(haversineMetres(clientLat, clientLng, h.coordinates.lat, h.coordinates.lng));
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = { name: h.name, id: h.id, r: h.coordinates.radius || 200 };
+      }
+    }
+  }
+  if (nearest && nearestDist <= nearest.r)
+    return {
+      type: 'off_site', distance: distToAssigned, assignedLabel,
+      detectedHotelName: nearest.name, detectedHotelId: nearest.id, detectedDistance: nearestDist
+    };
+
+  // ── Unknown location ──────────────────────────────────────────────────────
+  return { type: 'unknown_location', distance: distToAssigned, assignedLabel };
 }
 
 // Clock in — open to anyone who actually works on-site (employees + the
@@ -470,12 +518,13 @@ app.post('/api/shifts/start', auth('employee', 'manager', 'supervisor'), (req, r
   const already = shifts.find(s => s.userId === user.id && s.status === 'active');
   if (already) return res.status(409).json({ error: 'You are already clocked in', shift: already });
 
-  // ── Geolocation check ────────────────────────────────────────────────────
+  // ── Geolocation verdict (never blocks — flags for manager review) ────────
   const { lat, lng } = req.body;
-  const hotels        = db.read('hotels.json');
-  const hotelObj      = hotels.find(h => h.id === hotelId);
-  const geoError      = hotelObj ? checkGeoFence(lat, lng, hotelObj, subUnit) : null;
-  if (geoError) return res.status(403).json({ ...geoError, code: 'GEO_FENCE' });
+  const allHotels     = db.read('hotels.json');
+  const hotelObj      = allHotels.find(h => h.id === hotelId);
+  const geoVerdict    = hotelObj
+    ? computeGeoVerdict(lat, lng, hotelObj, subUnit, allHotels)
+    : { type: 'no_coords' };
 
   // Resolve position from the user record (JWT may be stale if admin re-tagged
   // the employee mid-session).
@@ -500,10 +549,14 @@ app.post('/api/shifts/start', auth('employee', 'manager', 'supervisor'), (req, r
     validated: false, validatedBy: null, validatedByName: null, validatedAt: null,
     isCorrection: false, correctionId: null,
     notes: '', editedBy: null, editedByName: null, editedAt: null,
-    // GPS audit trail — stored even if no validation was performed
-    geoLat:     (lat != null) ? parseFloat(lat.toFixed(6)) : null,
-    geoLng:     (lng != null) ? parseFloat(lng.toFixed(6)) : null,
-    geoChecked: (lat != null && lng != null && hotelObj?.coordinates != null) || false,
+    // GPS audit trail — full verdict stored for manager review
+    geoLat:              (lat != null) ? parseFloat(lat.toFixed(6)) : null,
+    geoLng:              (lng != null) ? parseFloat(lng.toFixed(6)) : null,
+    geoFlag:             geoVerdict.type,           // ok|roaming|off_site|unknown_location|no_gps|no_coords
+    geoDistance:         geoVerdict.distance || null,
+    geoDetectedHotel:    geoVerdict.detectedHotelName || null,
+    geoDetectedHotelId:  geoVerdict.detectedHotelId  || null,
+    geoDetectedSubUnit:  geoVerdict.detectedSubUnit   || null,
     createdAt: new Date().toISOString()
   };
   shifts.push(shift);

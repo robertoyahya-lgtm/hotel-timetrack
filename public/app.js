@@ -330,6 +330,37 @@ function roleBadge(role) {
   return `<span class="badge badge-${role||'employee'}">${esc(role||'employee')}</span>`;
 }
 
+// GPS flag badge displayed in the Validate table so managers see off-site alerts.
+function geoBadgeClass(shift) {
+  const f = shift.geoFlag;
+  if (!f || f === 'ok' || f === 'no_gps' || f === 'no_coords') return 'geo-ok';
+  if (f === 'roaming') return 'geo-roaming';
+  return 'geo-warn'; // off_site | unknown_location
+}
+function geoBadgeHtml(shift) {
+  const f = shift.geoFlag;
+  if (!f || f === 'no_gps' || f === 'no_coords') {
+    return `<span class="geo-badge geo-badge-none" title="Pas de vérification GPS">—</span>`;
+  }
+  if (f === 'ok') {
+    return `<span class="geo-badge geo-badge-ok" title="À la propriété assignée">✓ Site</span>`;
+  }
+  if (f === 'roaming') {
+    const sub = shift.geoDetectedSubUnit ? ` (${shift.geoDetectedSubUnit})` : '';
+    return `<span class="geo-badge geo-badge-roaming" title="Support LCPP${sub}">↔ LCPP${sub}</span>`;
+  }
+  if (f === 'off_site') {
+    const where = shift.geoDetectedHotel || 'autre site';
+    const dist  = shift.geoDistance ? ` · ${shift.geoDistance} m` : '';
+    return `<span class="geo-badge geo-badge-warn" title="A pointé depuis ${where}${dist}">⚠ ${esc(where)}${dist}</span>`;
+  }
+  if (f === 'unknown_location') {
+    const dist = shift.geoDistance ? ` · ${shift.geoDistance} m` : '';
+    return `<span class="geo-badge geo-badge-warn" title="Position inconnue${dist}">⚠ Hors site${dist}</span>`;
+  }
+  return `<span class="geo-badge geo-badge-none">—</span>`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // EMPLOYEE PAGES
 // ═══════════════════════════════════════════════════════════════════════════
@@ -407,7 +438,9 @@ async function checkTodayShift(userId) {
   } catch { el.innerHTML = ''; }
 }
 
-// Wraps browser Geolocation as a Promise (rejects on timeout or denial).
+// ── Geolocation utilities (client-side mirror of server logic) ────────────────
+
+// Wraps navigator.geolocation as a Promise.
 function requestGPS(timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     if (!navigator?.geolocation) { reject(new Error('unavailable')); return; }
@@ -419,47 +452,147 @@ function requestGPS(timeoutMs = 12000) {
   });
 }
 
+// Haversine distance in metres (same formula as server).
+function haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180, Δλ = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// Client-side geo verdict (mirrors server's computeGeoVerdict).
+// Used to show a pre-confirmation dialog before sending to server.
+function clientGeoVerdict(lat, lng, userHotel, userSubUnit, allHotels) {
+  if (!userHotel) return { type: 'no_coords' };
+
+  let assignedCoords = null;
+  if (userHotel.isGroup && userSubUnit && userHotel.subUnitCoordinates?.[userSubUnit]) {
+    assignedCoords = userHotel.subUnitCoordinates[userSubUnit];
+  } else if (!userHotel.isGroup && userHotel.coordinates) {
+    assignedCoords = userHotel.coordinates;
+  }
+  if (!assignedCoords) return { type: 'no_coords' };
+
+  const distToAssigned = Math.round(haversineM(lat, lng, assignedCoords.lat, assignedCoords.lng));
+  if (distToAssigned <= (assignedCoords.radius || 200))
+    return { type: 'ok', distance: distToAssigned };
+
+  // LCPP: employee rotates freely among all sub-units
+  if (userHotel.isGroup && userHotel.subUnitCoordinates) {
+    for (const [suName, suC] of Object.entries(userHotel.subUnitCoordinates)) {
+      if (suName === userSubUnit) continue;
+      if (Math.round(haversineM(lat, lng, suC.lat, suC.lng)) <= (suC.radius || 200))
+        return { type: 'roaming', distance: distToAssigned, detectedSubUnit: suName };
+    }
+  }
+
+  // Check all other hotels
+  let nearest = null, nearestDist = Infinity;
+  for (const h of (allHotels || [])) {
+    if (h.id === userHotel.id) continue;
+    if (h.isGroup && h.subUnitCoordinates) {
+      for (const [suName, suC] of Object.entries(h.subUnitCoordinates)) {
+        const d = Math.round(haversineM(lat, lng, suC.lat, suC.lng));
+        if (d < nearestDist) { nearestDist = d; nearest = { name: `${h.name} — ${suName}`, r: suC.radius || 200 }; }
+      }
+    } else if (h.coordinates) {
+      const d = Math.round(haversineM(lat, lng, h.coordinates.lat, h.coordinates.lng));
+      if (d < nearestDist) { nearestDist = d; nearest = { name: h.name, r: h.coordinates.radius || 200 }; }
+    }
+  }
+  if (nearest && nearestDist <= nearest.r)
+    return { type: 'off_site', distance: distToAssigned, detectedHotelName: nearest.name, detectedDistance: nearestDist };
+
+  return { type: 'unknown_location', distance: distToAssigned };
+}
+
+// Shows a confirmation modal when the employee is not at their assigned property.
+// Returns a Promise<boolean> (true = proceed, false = cancel).
+function showGeoConfirmModal(verdict, assignedName) {
+  return new Promise(resolve => {
+    const isOffSite = verdict.type === 'off_site';
+    const body = isOffSite
+      ? `<p style="margin-bottom:8px">Vous semblez être à <strong>${esc(verdict.detectedHotelName)}</strong>, non à votre propriété assignée (<strong>${esc(assignedName)}</strong>).</p>
+         <p class="text-muted text-sm">Distance estimée depuis votre propriété : <strong>${verdict.distance} m</strong></p>`
+      : `<p style="margin-bottom:8px">Vous n'êtes pas détecté à proximité de votre propriété assignée (<strong>${esc(assignedName)}</strong>).</p>
+         <p class="text-muted text-sm">Distance estimée : <strong>${verdict.distance} m</strong></p>`;
+
+    showModal(`
+      <div class="modal-head" style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:20px">📍</span> Pointage hors site
+      </div>
+      <div class="modal-body">
+        ${body}
+        <div class="geo-confirm-box">
+          Êtes-vous en déplacement de support ? Avez-vous informé votre manager ou superviseur ?
+        </div>
+      </div>
+      <div class="modal-foot" style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-secondary" id="geo-cancel">Annuler</button>
+        <button class="btn btn-primary"   id="geo-confirm">Pointer quand même</button>
+      </div>`);
+
+    document.getElementById('geo-confirm').addEventListener('click', () => { closeModal(); resolve(true); });
+    document.getElementById('geo-cancel').addEventListener('click',  () => { closeModal(); resolve(false); });
+  });
+}
+
 async function doClockIn() {
-  const btn = document.getElementById('btn-arrivee');
+  const btn  = document.getElementById('btn-arrivee');
+  const user = getUser();
   btn.disabled = true;
 
-  // ── Step 1: request GPS coordinates ───────────────────────────────────────
+  // ── Step 1: request GPS ──────────────────────────────────────────────────
   btn.textContent = 'Localisation…';
-  let gpsPayload = {};
-  let gpsWarning = null;
+  let gpsCoords   = null;
+  let gpsNote     = null;
 
   try {
     const pos = await requestGPS();
-    gpsPayload = { lat: pos.lat, lng: pos.lng };
-    // Show accuracy if low
-    if (pos.accuracy > 100) {
-      gpsWarning = `Précision GPS faible (${Math.round(pos.accuracy)} m). Le pointage sera enregistré.`;
-    }
-  } catch (gpsErr) {
-    // GPS unavailable or denied — show a warning but still allow the clock-in.
-    // The server will skip the geo-fence check when no coordinates are sent.
-    const denied = gpsErr?.code === 1; // PERMISSION_DENIED
-    gpsWarning = denied
-      ? 'Accès à la localisation refusé. Activez le GPS pour la vérification anti-triche.'
+    gpsCoords = { lat: pos.lat, lng: pos.lng };
+    if (pos.accuracy > 150) gpsNote = `Précision GPS faible (±${Math.round(pos.accuracy)} m).`;
+  } catch (err) {
+    const denied = err?.code === 1;
+    gpsNote = denied
+      ? 'Localisation refusée — GPS désactivé. Votre manager peut demander une vérification.'
       : 'GPS non disponible. Le pointage sera enregistré sans vérification de position.';
   }
 
-  // ── Step 2: send to server ──────────────────────────────────────────────────
+  // ── Step 2: if off-site, ask for confirmation ────────────────────────────
+  if (gpsCoords) {
+    try {
+      const hotels    = await GET('/api/hotels');
+      const userHotel = hotels.find(h => h.id === user.hotelId);
+      const verdict   = clientGeoVerdict(gpsCoords.lat, gpsCoords.lng, userHotel, user.subUnit, hotels);
+
+      if (verdict.type === 'roaming') {
+        // LCPP internal movement — allowed silently, brief info after clock-in
+        gpsNote = `Support ${esc(verdict.detectedSubUnit)} enregistré.`;
+      } else if (verdict.type === 'off_site' || verdict.type === 'unknown_location') {
+        const assignedName = user.subUnit || user.hotelName || 'votre propriété';
+        const confirmed = await showGeoConfirmModal(verdict, assignedName);
+        if (!confirmed) {
+          btn.disabled = false; btn.textContent = 'Arrivée'; return;
+        }
+        gpsNote = verdict.type === 'off_site'
+          ? `Pointage enregistré depuis ${esc(verdict.detectedHotelName)} — votre manager sera informé.`
+          : 'Pointage enregistré hors site — votre manager sera informé.';
+      }
+    } catch { /* hotels fetch failed — skip client-side check, server will handle */ }
+  }
+
+  // ── Step 3: POST to server ───────────────────────────────────────────────
   btn.textContent = 'Enregistrement…';
   try {
-    activeShift = await POST('/api/shifts/start', gpsPayload);
-    if (gpsWarning) toast(gpsWarning, 'warn');
+    activeShift = await POST('/api/shifts/start', gpsCoords || {});
+    if (gpsNote) toast(gpsNote, gpsNote.includes('manager') ? 'warn' : 'ok');
     toast('Arrivée enregistrée ✓', 'ok');
     renderShiftArea(getUser());
+    checkLongRunningShifts(getUser()); // refresh banner
   } catch (e) {
-    // Geo-fence rejection from the server → clear, actionable message
-    if (e?.code === 'GEO_FENCE') {
-      toast(`📍 ${e.error}`, 'err');
-    } else {
-      toast(e?.error || 'Impossible d\'enregistrer l\'arrivée.', 'err');
-    }
-    btn.disabled = false;
-    btn.textContent = 'Arrivée';
+    toast(e?.error || 'Impossible d\'enregistrer l\'arrivée.', 'err');
+    btn.disabled = false; btn.textContent = 'Arrivée';
   }
 }
 
@@ -1050,22 +1183,26 @@ async function loadValTable(user) {
       <thead>
         <tr>
           <th class="th-check"><input type="checkbox" id="chk-all" title="Select all"></th>
-          <th>Employee</th>
-          ${user.role === 'admin' ? '<th>Hotel</th>' : ''}
-          <th>Date</th><th>Start</th><th>End</th><th>Duration</th><th>Status</th>
+          <th>Employé</th>
+          ${user.role === 'admin' ? '<th>Propriété</th>' : ''}
+          <th>Date</th><th>Début</th><th>Fin</th><th>Durée</th><th>GPS</th><th>Statut</th>
         </tr>
       </thead>
       <tbody>
         ${valShifts.map(s => `
-          <tr>
+          <tr class="${geoBadgeClass(s) === 'geo-warn' ? 'val-row-geo-warn' : ''}">
             <td>${s.status === 'completed' ? `<input type="checkbox" class="val-chk" data-id="${s.id}">` : ''}</td>
-            <td><div class="td-name">${esc(s.userName)}</div></td>
-            ${user.role === 'admin' ? `<td>${esc(s.hotelName)}</td>` : ''}
+            <td>
+              <div class="td-name">${esc(s.userName)}</div>
+              ${s.position ? `<div class="td-sub">${esc(s.position)}</div>` : ''}
+            </td>
+            ${user.role === 'admin' ? `<td>${esc(s.hotelName)}${s.subUnit ? `<div class="td-sub">${esc(s.subUnit)}</div>` : ''}</td>` : ''}
             <td>${fmtDate(s.startTime)}</td>
             <td>${fmtTime(s.startTime)}</td>
-            <td>${fmtTime(s.endTime)}</td>
-            <td class="fw600">${fmtDur(s.totalMinutes)}</td>
-            <td>${badgeFor(s.status)}${s.validatedByName ? `<div class="td-sub">by ${esc(s.validatedByName)}</div>` : ''}</td>
+            <td>${s.endTime ? fmtTime(s.endTime) : '<span class="text-muted">—</span>'}</td>
+            <td class="fw600">${s.totalMinutes ? fmtDur(s.totalMinutes) : '—'}</td>
+            <td>${geoBadgeHtml(s)}</td>
+            <td>${badgeFor(s.status)}${s.validatedByName ? `<div class="td-sub">par ${esc(s.validatedByName)}</div>` : ''}</td>
           </tr>`).join('')}
       </tbody>
     </table>`;
