@@ -414,6 +414,43 @@ app.get('/api/shifts', auth(), (req, res) => {
   res.json(shifts);
 });
 
+// ── Geolocation helpers ──────────────────────────────────────────────────────
+// Returns the distance in metres between two GPS coordinates (Haversine).
+function haversineMetres(lat1, lng1, lat2, lng2) {
+  const R  = 6371000; // Earth radius in metres
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lng2 - lng1) * Math.PI / 180;
+  const a  = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Returns null (OK) or an error object { error, distance, radius } if outside the allowed radius.
+function checkGeoFence(clientLat, clientLng, hotel, subUnit) {
+  if (clientLat == null || clientLng == null) return null; // no GPS sent → skip
+
+  let coords = null;
+  let locationName = hotel.name;
+
+  if (hotel.isGroup && subUnit) {
+    coords = hotel.subUnitCoordinates?.[subUnit] || null;
+    if (coords) locationName = subUnit;
+  }
+  if (!coords) coords = hotel.coordinates || null;
+  if (!coords) return null; // no coordinates configured for this hotel → skip
+
+  const dist   = haversineMetres(clientLat, clientLng, coords.lat, coords.lng);
+  const radius = coords.radius || 200;
+  if (dist <= radius) return null; // inside fence — OK
+
+  return {
+    error:    `Vous êtes à ${Math.round(dist)} m de ${locationName}. Le pointage est autorisé uniquement dans un rayon de ${radius} m.`,
+    distance: Math.round(dist),
+    radius,
+    location: locationName,
+  };
+}
+
 // Clock in — open to anyone who actually works on-site (employees + the
 // floor leadership: managers + supervisors). Admin & accounting are
 // office/back-office roles and are intentionally excluded.
@@ -432,6 +469,13 @@ app.post('/api/shifts/start', auth('employee', 'manager', 'supervisor'), (req, r
 
   const already = shifts.find(s => s.userId === user.id && s.status === 'active');
   if (already) return res.status(409).json({ error: 'You are already clocked in', shift: already });
+
+  // ── Geolocation check ────────────────────────────────────────────────────
+  const { lat, lng } = req.body;
+  const hotels        = db.read('hotels.json');
+  const hotelObj      = hotels.find(h => h.id === hotelId);
+  const geoError      = hotelObj ? checkGeoFence(lat, lng, hotelObj, subUnit) : null;
+  if (geoError) return res.status(403).json({ ...geoError, code: 'GEO_FENCE' });
 
   // Resolve position from the user record (JWT may be stale if admin re-tagged
   // the employee mid-session).
@@ -456,6 +500,10 @@ app.post('/api/shifts/start', auth('employee', 'manager', 'supervisor'), (req, r
     validated: false, validatedBy: null, validatedByName: null, validatedAt: null,
     isCorrection: false, correctionId: null,
     notes: '', editedBy: null, editedByName: null, editedAt: null,
+    // GPS audit trail — stored even if no validation was performed
+    geoLat:     (lat != null) ? parseFloat(lat.toFixed(6)) : null,
+    geoLng:     (lng != null) ? parseFloat(lng.toFixed(6)) : null,
+    geoChecked: (lat != null && lng != null && hotelObj?.coordinates != null) || false,
     createdAt: new Date().toISOString()
   };
   shifts.push(shift);

@@ -45,16 +45,39 @@ async function main() {
   // Hotels are configuration, not user data — always ensure the canonical list
   // exists with proper IDs and the isGroup flag for Les Chambres Petit Prince.
   const DEFAULT_HOTELS = [
-    { id: 'd0bd4e43-c48c-49ef-880d-fabab4f11df6', name: 'The Cove',       subUnits: [] },
-    { id: '1149a9e7-6a01-4981-9145-558b956637d2', name: 'Maison de Paris', subUnits: [] },
+    {
+      id: 'd0bd4e43-c48c-49ef-880d-fabab4f11df6', name: 'The Cove', subUnits: [],
+      address: '4501 Rue Drolet, Montréal, QC H2T 1R1',
+      coordinates: { lat: 45.523682, lng: -73.583714, radius: 200 },
+    },
+    {
+      id: '1149a9e7-6a01-4981-9145-558b956637d2', name: 'Maison de Paris', subUnits: [],
+      address: '901 Rue Sherbrooke E, Montréal, QC H2L 1L3',
+      coordinates: { lat: 45.513149, lng: -73.569234, radius: 200 },
+    },
     {
       id: 'ae3dac83-9cd9-469c-9236-4641cffb1736',
       name: 'Les Chambres Petit Prince',
       isGroup: true,
       subUnits: ['Victoria', 'Mystral', 'The Mile End Parc', 'The Little Prince Rooms'],
+      coordinates: null,
+      subUnitCoordinates: {
+        'Victoria':             { lat: 45.491408, lng: -73.630485, radius: 200, address: '5475 Avenue Victoria, Montréal, QC H3W 2P7' },
+        'Mystral':              { lat: 45.521256, lng: -73.577538, radius: 200, address: '4152 Rue Saint-Denis, Montréal, QC H2W 2M5' },
+        'The Mile End Parc':    { lat: 45.523717, lng: -73.606155, radius: 200, address: '5826 Avenue du Parc, Montréal, QC H2V 4H3' },
+        'The Little Prince Rooms': { lat: 45.496549, lng: -73.554720, radius: 200, address: '64 Rue Prince, Montréal, QC H3C 2M8' },
+      },
     },
-    { id: 'e444cbd1-0088-406d-8292-8c9b4b89d631', name: 'The Alexander', subUnits: [] },
-    { id: '645cbf99-b5ae-4e94-90e4-dec9aeacd8d1', name: 'Hotel Monroe',  subUnits: [] },
+    {
+      id: 'e444cbd1-0088-406d-8292-8c9b4b89d631', name: 'The Alexander', subUnits: [],
+      address: '411 Rue des Récollets, Montréal, QC H2Y 2L2',
+      coordinates: { lat: 45.501325, lng: -73.558754, radius: 200 },
+    },
+    {
+      id: '645cbf99-b5ae-4e94-90e4-dec9aeacd8d1', name: 'Hotel Monroe', subUnits: [],
+      address: '1470 Rue Mackay, Montréal, QC H3G 2H6',
+      coordinates: { lat: 45.494243, lng: -73.573730, radius: 200 },
+    },
   ];
   if (!fs.existsSync(FILES.hotels)) {
     writeJson(FILES.hotels, DEFAULT_HOTELS);

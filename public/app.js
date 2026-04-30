@@ -407,16 +407,59 @@ async function checkTodayShift(userId) {
   } catch { el.innerHTML = ''; }
 }
 
+// Wraps browser Geolocation as a Promise (rejects on timeout or denial).
+function requestGPS(timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    if (!navigator?.geolocation) { reject(new Error('unavailable')); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+      err => reject(err),
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 90000 }
+    );
+  });
+}
+
 async function doClockIn() {
   const btn = document.getElementById('btn-arrivee');
-  btn.disabled = true; btn.textContent = 'Enregistrement...';
+  btn.disabled = true;
+
+  // ── Step 1: request GPS coordinates ───────────────────────────────────────
+  btn.textContent = 'Localisation…';
+  let gpsPayload = {};
+  let gpsWarning = null;
+
   try {
-    activeShift = await POST('/api/shifts/start', {});
-    toast('Arrivée enregistrée.', 'ok');
+    const pos = await requestGPS();
+    gpsPayload = { lat: pos.lat, lng: pos.lng };
+    // Show accuracy if low
+    if (pos.accuracy > 100) {
+      gpsWarning = `Précision GPS faible (${Math.round(pos.accuracy)} m). Le pointage sera enregistré.`;
+    }
+  } catch (gpsErr) {
+    // GPS unavailable or denied — show a warning but still allow the clock-in.
+    // The server will skip the geo-fence check when no coordinates are sent.
+    const denied = gpsErr?.code === 1; // PERMISSION_DENIED
+    gpsWarning = denied
+      ? 'Accès à la localisation refusé. Activez le GPS pour la vérification anti-triche.'
+      : 'GPS non disponible. Le pointage sera enregistré sans vérification de position.';
+  }
+
+  // ── Step 2: send to server ──────────────────────────────────────────────────
+  btn.textContent = 'Enregistrement…';
+  try {
+    activeShift = await POST('/api/shifts/start', gpsPayload);
+    if (gpsWarning) toast(gpsWarning, 'warn');
+    toast('Arrivée enregistrée ✓', 'ok');
     renderShiftArea(getUser());
   } catch (e) {
-    toast(e.error || 'Impossible d\'enregistrer l\'arrivée.', 'err');
-    btn.disabled = false; btn.textContent = 'Arrivée';
+    // Geo-fence rejection from the server → clear, actionable message
+    if (e?.code === 'GEO_FENCE') {
+      toast(`📍 ${e.error}`, 'err');
+    } else {
+      toast(e?.error || 'Impossible d\'enregistrer l\'arrivée.', 'err');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Arrivée';
   }
 }
 
