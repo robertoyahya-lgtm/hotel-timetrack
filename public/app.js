@@ -48,6 +48,7 @@ const NAV_ICONS = {
   corrections: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3.5h10v7.5H7l-3 2.5v-2.5H3z"/></svg>',
   employees:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5.5" r="2.4"/><path d="M2 13c0-2.3 1.8-3.8 4-3.8s4 1.5 4 3.8"/><path d="M11 4.5a2.2 2.2 0 010 4M14 13c0-2-1.4-3.4-3.2-3.7"/></svg>',
   payroll:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="12" height="9" rx="1.5"/><path d="M2 7h12M5 10.5h2"/></svg>',
+  analytics:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12.5l3.5-4 3 2.5 3.5-6 2 3"/><path d="M2 14h12"/></svg>',
   account:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.6"/><path d="M3 13.5c.7-2.3 2.7-3.4 5-3.4s4.3 1.1 5 3.4"/></svg>',
 };
 
@@ -65,6 +66,7 @@ const NAV = {
     { route: 'validate',    label: 'Validate Hours' },
     { route: 'corrections', label: 'Corrections', badge: 'pending_corrections' },
     { route: 'payroll',     label: 'Payroll' },
+    { route: 'analytics',   label: 'Analyse' },
     { route: 'clock',       label: 'Clock In / Out' },
     { route: 'account',     label: 'My Account' },
   ],
@@ -85,11 +87,13 @@ const NAV = {
     { route: 'validate',    label: 'Validate Hours' },
     { route: 'corrections', label: 'Corrections' },
     { route: 'payroll',     label: 'Payroll' },
+    { route: 'analytics',   label: 'Analyse' },
     { route: 'account',     label: 'My Account' },
   ],
   accounting: [
-    { route: 'payroll',  label: 'Payroll' },
-    { route: 'account',  label: 'My Account' },
+    { route: 'payroll',    label: 'Payroll' },
+    { route: 'analytics',  label: 'Analyse' },
+    { route: 'account',    label: 'My Account' },
   ],
 };
 
@@ -97,7 +101,7 @@ const PAGE_TITLES = {
   clock: 'Clock In / Out', timesheet: 'My Timesheet', correction: 'Request Correction',
   overview: 'Overview', shifts: 'Shifts', validate: 'Validate Hours',
   corrections: 'Corrections', employees: 'Employees', payroll: 'Payroll',
-  account: 'My Account'
+  analytics: 'Analyse', account: 'My Account'
 };
 
 const DEFAULT_ROUTE = {
@@ -131,6 +135,7 @@ function navigate(route) {
     corrections: renderCorrections,
     employees:   renderEmployees,
     payroll:     renderPayroll,
+    analytics:   renderAnalytics,
     account:     renderAccount,
   };
   if (renders[route]) renders[route](user);
@@ -199,9 +204,64 @@ async function init() {
     }
     renderSidebar(pending);
     navigate(DEFAULT_ROUTE[user.role] || 'clock');
+
+    // Check for forgotten clock-outs on login and every 10 minutes
+    checkLongRunningShifts(user);
+    setInterval(() => checkLongRunningShifts(getUser()), 10 * 60 * 1000);
   } catch {
     signOut();
   }
+}
+
+// ─── Long-running shift banner (forgotten clock-outs) ─────────────────────────
+async function checkLongRunningShifts(user) {
+  if (!user) return;
+  try {
+    const threshold = 8; // hours
+    const list = await GET(`/api/shifts/long-running?threshold=${threshold}`);
+    const banner = document.getElementById('long-run-banner');
+    if (!list || list.length === 0) {
+      if (banner) banner.remove();
+      return;
+    }
+    const existing = document.getElementById('long-run-banner');
+    if (existing) existing.remove();
+
+    const el = document.createElement('div');
+    el.id = 'long-run-banner';
+    el.className = 'long-run-banner';
+
+    if (user.role === 'employee' || user.role === 'supervisor') {
+      // Own forgotten shift
+      const s = list[0];
+      const h = s.hoursElapsed.toFixed(1);
+      el.innerHTML = `
+        <div class="long-run-inner">
+          <span class="long-run-icon">⏰</span>
+          <div class="long-run-text">
+            <strong>As-tu oublié de te dépointer ?</strong>
+            <span>Tu es pointé(e) depuis <strong>${h}h</strong> à ${esc(s.hotelName || '')}${s.subUnit ? ' · ' + esc(s.subUnit) : ''}.</span>
+          </div>
+          <button class="long-run-btn" onclick="doClockOut();document.getElementById('long-run-banner').remove()">Se dépointer maintenant</button>
+          <button class="long-run-dismiss" onclick="this.closest('#long-run-banner').remove()" title="Dismiss">✕</button>
+        </div>`;
+    } else {
+      // Manager/admin: list all long-running shifts
+      el.innerHTML = `
+        <div class="long-run-inner">
+          <span class="long-run-icon">⚠️</span>
+          <div class="long-run-text">
+            <strong>${list.length} shift${list.length > 1 ? 's' : ''} ouvert${list.length > 1 ? 's' : ''} depuis plus de ${threshold}h</strong>
+            <span>${list.map(s => `${esc(s.userName)} (${s.hoursElapsed.toFixed(1)}h — ${esc(s.hotelName || '')}${s.subUnit ? ' · ' + esc(s.subUnit) : ''})`).join(' · ')}</span>
+          </div>
+          <button class="long-run-dismiss" onclick="this.closest('#long-run-banner').remove()" title="Dismiss">✕</button>
+        </div>`;
+    }
+
+    // Insert banner just before the page-body (after the topbar)
+    const pageBody = document.getElementById('page-body');
+    pageBody.parentElement.insertBefore(el, pageBody);
+  } catch {}
 }
 
 document.addEventListener('DOMContentLoaded', init);
@@ -1616,7 +1676,7 @@ async function renderPayroll() {
             </optgroup>
           </select>
           <select class="form-control" id="pr-hotel" onchange="onPayrollHotelChange(${JSON.stringify(groupHotels)})">
-            <option value="">All Hotels</option>
+            <option value="">— Choisir une propriété —</option>
             ${hotels.map(h => `<option value="${h.id}" data-isgroup="${h.isGroup ? 'true' : 'false'}">${esc(h.name)}</option>`).join('')}
           </select>
           <select class="form-control" id="pr-subunit" style="display:none">
@@ -1630,7 +1690,7 @@ async function renderPayroll() {
           <button class="btn btn-secondary" id="pr-csv" style="display:none">Export CSV</button>
           <button class="btn btn-secondary" id="pr-xlsx" style="display:none">Export Excel</button>
         </div>
-        <p class="text-muted text-sm mt12">Pick any start and end date — or use the quick periods dropdown. Shows only manager-validated shifts.</p>
+        <p class="text-muted text-sm mt12">Sélectionnez une propriété et une période · Uniquement les shifts validés par les managers · "Tout" = toutes les positions de la propriété choisie</p>
       </div>
     </div>
     <div id="pr-output"></div>`;
@@ -1718,14 +1778,19 @@ async function loadPayroll() {
   const from = document.getElementById('pr-from').value;
   const to   = document.getElementById('pr-to').value;
   if (!from || !to) {
-    alert('Please pick both a start and an end date.');
+    toast('Veuillez sélectionner les dates de début et de fin.', 'err');
     return;
   }
   if (from > to) {
-    alert('Start date must be on or before end date.');
+    toast('La date de début doit être avant la date de fin.', 'err');
     return;
   }
   const hotelId    = document.getElementById('pr-hotel').value;
+  if (!hotelId) {
+    toast('Sélectionnez une propriété pour générer le rapport de paie.', 'err');
+    document.getElementById('pr-hotel').focus();
+    return;
+  }
   const subUnit    = (document.getElementById('pr-subunit')?.style.display !== 'none')
                       ? (document.getElementById('pr-subunit')?.value || '')
                       : '';
@@ -1745,79 +1810,128 @@ async function loadPayroll() {
     document.getElementById('pr-csv').style.display  = '';
     document.getElementById('pr-xlsx').style.display = '';
 
-    const maxMins = Math.max(...payrollData.byEmployee.map(e => e.minutes), 1);
-    const filterChip = position
-      ? `<span class="badge badge-position" style="margin-left:8px">${esc(position)}</span>`
-      : '';
+    // ── Build position blocks ──────────────────────────────────────────────────
+    // Group employees by position (client-side — no extra server call)
+    const posOrder = ['Receptionist', 'Cleaner', 'Handyman', 'Manager', 'Supervisor', 'Unassigned'];
+    const posMap   = {};
+    payrollData.byEmployee.forEach(e => {
+      const pos = e.position || 'Unassigned';
+      if (!posMap[pos]) posMap[pos] = { minutes: 0, shifts: 0, employees: [] };
+      posMap[pos].minutes += e.minutes;
+      posMap[pos].shifts  += e.shifts;
+      posMap[pos].employees.push(e);
+    });
+    // Sort positions: known order first, then alphabetically for the rest
+    const sortedPositions = Object.keys(posMap).sort((a, b) => {
+      const ia = posOrder.indexOf(a), ib = posOrder.indexOf(b);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      if (ia !== -1) return -1;
+      if (ib !== -1) return  1;
+      return a.localeCompare(b);
+    });
 
-    el.innerHTML = `
-      <div class="stat-grid mb12" style="grid-template-columns:repeat(3,1fr)">
-        <div class="stat-card blue"><div class="stat-value">${payrollData.byEmployee.length}</div><div class="stat-label">Employees</div></div>
-        <div class="stat-card green"><div class="stat-value">${payrollData.totalShifts}</div><div class="stat-label">Validated Shifts</div></div>
-        <div class="stat-card"><div class="stat-value">${fmtDurH(payrollData.totalMinutes)}</div><div class="stat-label">Total Hours</div></div>
-      </div>
+    const maxMinsInBlock = minutes => {
+      return Math.max(...Object.values(posMap).flatMap(p => p.employees.map(e => e.minutes)), 1);
+    };
+    const globalMax = maxMinsInBlock();
 
-      <div class="card mb12">
-        <div class="card-head">
-          <span>By Employee${filterChip}</span>
-          <span class="text-muted text-sm">${from} to ${to}</span>
-        </div>
-        <div class="table-wrap">
-          <table>
+    const isGroup = payrollData.bySubUnit && Object.keys(payrollData.bySubUnit).length > 0;
+
+    const blocksHTML = sortedPositions.map(pos => {
+      const group = posMap[pos];
+      // Sort employees within block by hotel then name
+      const emps = [...group.employees].sort((a, b) =>
+        (a.hotelName || '').localeCompare(b.hotelName || '') || a.name.localeCompare(b.name));
+
+      // Sub-unit breakdown for this position (LCPP group)
+      const subTotals = {};
+      if (isGroup) {
+        emps.forEach(e => {
+          if (e.subUnit) {
+            if (!subTotals[e.subUnit]) subTotals[e.subUnit] = { minutes: 0, shifts: 0 };
+            subTotals[e.subUnit].minutes += e.minutes;
+            subTotals[e.subUnit].shifts  += e.shifts;
+          }
+        });
+      }
+
+      return `
+        <div class="pr-block">
+          <div class="pr-block-head">
+            <div class="pr-block-title">${esc(pos)}</div>
+            <div class="pr-block-meta">${emps.length} employé${emps.length > 1 ? 's' : ''} · ${group.shifts} shift${group.shifts > 1 ? 's' : ''}</div>
+            <div class="pr-block-total">${fmtDurH(group.minutes)}</div>
+          </div>
+          <table class="pr-block-table">
             <thead>
-              <tr><th>Employee</th><th>Hotel</th><th>Sub-unit</th><th>Position</th><th>Role</th><th>Shifts</th><th>Total Hours</th><th style="min-width:160px"></th></tr>
+              <tr>
+                <th>Employé</th>
+                <th>Propriété${isGroup ? ' / Unité' : ''}</th>
+                <th style="text-align:right">Shifts</th>
+                <th style="text-align:right">Heures</th>
+                <th style="width:140px"></th>
+              </tr>
             </thead>
             <tbody>
-              ${payrollData.byEmployee.map(e => `
+              ${emps.map(e => `
                 <tr>
                   <td class="td-name">${esc(e.name)}</td>
-                  <td>${esc(e.hotelName)}</td>
-                  <td class="text-muted">${esc(e.subUnit || '—')}</td>
-                  <td>${e.position
-                    ? `<span class="badge badge-position">${esc(e.position)}</span>`
-                    : '<span class="text-muted">—</span>'}</td>
-                  <td>${roleBadge(e.role)}</td>
-                  <td>${e.shifts}</td>
-                  <td class="fw600">${fmtDurH(e.minutes)}</td>
-                  <td>
-                    <div class="bar-wrap"><div class="bar green" style="width:${Math.round(e.minutes/maxMins*100)}%"></div></div>
-                  </td>
+                  <td>${esc(e.hotelName || '—')}${e.subUnit ? `<span class="pr-subunit-pill">${esc(e.subUnit)}</span>` : ''}</td>
+                  <td style="text-align:right">${e.shifts}</td>
+                  <td style="text-align:right" class="fw600">${fmtDurH(e.minutes)}</td>
+                  <td><div class="bar-wrap"><div class="bar green" style="width:${Math.round(e.minutes/globalMax*100)}%"></div></div></td>
                 </tr>`).join('')}
-              <tr style="background:var(--gray-50);font-weight:700;border-top:2px solid var(--gray-200)">
-                <td colspan="5">Total</td>
-                <td>${payrollData.totalShifts}</td>
-                <td>${fmtDurH(payrollData.totalMinutes)}</td>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="3" class="pr-block-foot-label">Total — ${esc(pos)}</td>
+                <td style="text-align:right" class="pr-block-foot-total">${fmtDurH(group.minutes)}</td>
                 <td></td>
               </tr>
-            </tbody>
+              ${Object.keys(subTotals).length > 0 ? Object.entries(subTotals)
+                .sort(([a],[b]) => a.localeCompare(b))
+                .map(([su, d]) => `
+                  <tr class="pr-subunit-row">
+                    <td colspan="3" style="padding-left:24px;color:var(--gray-500);font-size:12px">↳ ${esc(su)}</td>
+                    <td style="text-align:right;color:var(--gray-500);font-size:12px">${fmtDurH(d.minutes)}</td>
+                    <td></td>
+                  </tr>`).join('') : ''}
+            </tfoot>
           </table>
-        </div>
+        </div>`;
+    }).join('');
+
+    const periodLabel = `${from} — ${to}`;
+
+    el.innerHTML = `
+      <div class="pr-report-header">
+        <div class="pr-report-period">${periodLabel}</div>
+        ${position ? `<span class="badge badge-position">${esc(position)}</span>` : ''}
+        ${hotelId ? `<span class="badge" style="background:var(--navy-100);color:var(--navy-800)">${esc(document.querySelector('#pr-hotel option:checked')?.textContent || '')}</span>` : ''}
       </div>
 
-      <div class="card mb12">
-        <div class="card-head">By Position</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Position</th><th>Shifts</th><th>Total Hours</th></tr></thead>
-            <tbody>
-              ${(payrollData.byPosition || []).length === 0
-                ? '<tr><td colspan="3" class="empty-state text-muted">No data.</td></tr>'
-                : payrollData.byPosition.map(p => `
-                  <tr>
-                    <td class="td-name"><span class="badge badge-position">${esc(p.position)}</span></td>
-                    <td>${p.shifts}</td>
-                    <td class="fw600">${fmtDurH(p.minutes)}</td>
-                  </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
+      <div class="stat-grid mb16" style="grid-template-columns:repeat(3,1fr)">
+        <div class="stat-card blue"><div class="stat-value">${payrollData.byEmployee.length}</div><div class="stat-label">Employés</div></div>
+        <div class="stat-card green"><div class="stat-value">${payrollData.totalShifts}</div><div class="stat-label">Shifts validés</div></div>
+        <div class="stat-card"><div class="stat-value">${fmtDurH(payrollData.totalMinutes)}</div><div class="stat-label">Total heures</div></div>
       </div>
 
-      <div class="card mb12">
-        <div class="card-head">By Hotel / Group</div>
-        <div class="table-wrap">
+      ${sortedPositions.length === 0
+        ? `<div class="card"><div class="card-body empty-state text-muted">Aucun shift validé pour cette période.</div></div>`
+        : blocksHTML}
+
+      ${sortedPositions.length > 0 ? `
+      <div class="pr-grand-total">
+        <span class="pr-grand-total-label">TOTAL GÉNÉRAL</span>
+        <span class="pr-grand-total-value">${fmtDurH(payrollData.totalMinutes)}</span>
+      </div>` : ''}
+
+      ${payrollData.byHotel && payrollData.byHotel.length > 1 ? `
+      <details class="pr-details-section mt16">
+        <summary>Détail par propriété</summary>
+        <div class="table-wrap mt8">
           <table>
-            <thead><tr><th>Hotel / Group</th><th>Shifts</th><th>Total Hours</th></tr></thead>
+            <thead><tr><th>Propriété / Groupe</th><th>Shifts</th><th>Heures</th></tr></thead>
             <tbody>
               ${payrollData.byHotel.map(h => `
                 <tr>
@@ -1828,27 +1942,9 @@ async function loadPayroll() {
             </tbody>
           </table>
         </div>
-      </div>
-
-      ${payrollData.bySubUnit && Object.keys(payrollData.bySubUnit).length > 0 ? `
-      <div class="card">
-        <div class="card-head">Les Chambres Petit Prince — By Property</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Property</th><th>Shifts</th><th>Total Hours</th></tr></thead>
-            <tbody>
-              ${Object.values(payrollData.bySubUnit).sort((a,b)=>a.name.localeCompare(b.name)).map(p => `
-                <tr>
-                  <td class="td-name">${esc(p.name)}</td>
-                  <td>${p.shifts}</td>
-                  <td class="fw600">${fmtDurH(p.minutes)}</td>
-                </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>` : ''}`;
+      </details>` : ''}`;
   } catch (e) {
-    el.innerHTML = '<div class="empty-state text-muted">Error loading payroll data.</div>';
+    el.innerHTML = '<div class="empty-state text-muted">Erreur lors du chargement du rapport.</div>';
   }
 }
 
@@ -1867,6 +1963,143 @@ function exportPayrollCSV() {
 
 function exportPayrollXLSX() {
   window.open(`/api/payroll/export/xlsx?${payrollExportQS()}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Historical view of validated hours by month
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function renderAnalytics() {
+  const body = document.getElementById('page-body');
+  const hotels    = await GET('/api/hotels');
+  let positions   = [];
+  try { positions = (await GET('/api/positions')).positions || []; } catch {}
+  const groupHotels = hotels.filter(h => h.isGroup && h.subUnits?.length > 0);
+  const thisYear  = new Date().getFullYear();
+  const years     = [thisYear, thisYear - 1, thisYear - 2];
+
+  body.innerHTML = `
+    <div class="card mb12">
+      <div class="card-body" style="padding:14px 18px">
+        <div class="filters">
+          <select class="form-control" id="an-year">
+            ${years.map(y => `<option value="${y}" ${y===thisYear?'selected':''}>${y}</option>`).join('')}
+          </select>
+          <select class="form-control" id="an-hotel" onchange="onAnalyticsHotelChange(${JSON.stringify(groupHotels)})">
+            <option value="">Toutes les propriétés</option>
+            ${hotels.map(h => `<option value="${h.id}">${esc(h.name)}</option>`).join('')}
+          </select>
+          <select class="form-control" id="an-subunit" style="display:none">
+            <option value="">Toutes les unités</option>
+          </select>
+          <select class="form-control" id="an-position">
+            <option value="">Tous les postes</option>
+            ${positions.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary" id="an-load">Analyser</button>
+        </div>
+        <p class="text-muted text-sm mt12">Uniquement les shifts validés par les managers.</p>
+      </div>
+    </div>
+    <div id="an-output"></div>`;
+
+  document.getElementById('an-load').addEventListener('click', loadAnalytics);
+  loadAnalytics();
+}
+
+function onAnalyticsHotelChange(groupHotels) {
+  const sel     = document.getElementById('an-hotel');
+  const subSel  = document.getElementById('an-subunit');
+  const group   = groupHotels.find(h => h.id === sel.value);
+  if (group) {
+    subSel.innerHTML = '<option value="">Toutes les unités</option>' +
+      group.subUnits.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    subSel.style.display = '';
+  } else {
+    subSel.innerHTML = '<option value="">Toutes les unités</option>';
+    subSel.style.display = 'none';
+  }
+}
+
+async function loadAnalytics() {
+  const year     = document.getElementById('an-year').value;
+  const hotelId  = document.getElementById('an-hotel').value;
+  const position = document.getElementById('an-position').value;
+  const el       = document.getElementById('an-output');
+  el.innerHTML   = '<div class="empty-state text-muted">Chargement…</div>';
+
+  const qs = new URLSearchParams({ year });
+  if (hotelId)  qs.set('hotelId',  hotelId);
+  if (position) qs.set('position', position);
+
+  try {
+    const data = await GET(`/api/analytics/summary?${qs.toString()}`);
+    const { months, byPosition, total } = data;
+
+    // Calculate max monthly minutes for bar scaling
+    const maxMonthMins = Math.max(...months.map(m => m.minutes), 1);
+
+    // Monthly bar chart
+    const monthRowsHTML = months.map(m => {
+      const pct  = Math.round(m.minutes / maxMonthMins * 100);
+      const hasData = m.minutes > 0;
+      return `
+        <div class="an-month-row ${hasData ? '' : 'an-month-empty'}">
+          <div class="an-month-label">${m.label.slice(0,3).toUpperCase()}</div>
+          <div class="an-month-bar-wrap">
+            <div class="an-month-bar" style="width:${pct}%"></div>
+          </div>
+          <div class="an-month-hours">${hasData ? fmtDurH(m.minutes) : '—'}</div>
+          <div class="an-month-shifts">${hasData ? m.shifts + ' shift' + (m.shifts > 1 ? 's' : '') : ''}</div>
+        </div>`;
+    }).join('');
+
+    // By-position breakdown
+    const byPosHTML = byPosition.length === 0 ? '' : `
+      <div class="card mt16">
+        <div class="card-head">Par poste — ${year}</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Poste</th>${months.filter(m=>m.minutes>0).slice(0,6).map(m=>`<th style="text-align:right">${m.label.slice(0,3)}</th>`).join('')}<th style="text-align:right">Total</th></tr></thead>
+            <tbody>
+              ${byPosition.map(p => {
+                const posTotal = p.months.reduce((t, m) => t + m.minutes, 0);
+                if (posTotal === 0) return '';
+                const activeMths = months.filter(m => m.minutes > 0).slice(0, 6);
+                return `<tr>
+                  <td><span class="badge badge-position">${esc(p.position)}</span></td>
+                  ${activeMths.map((m, i) => `<td style="text-align:right">${p.months[m.month-1].minutes > 0 ? fmtDurH(p.months[m.month-1].minutes) : '<span class="text-muted">—</span>'}</td>`).join('')}
+                  <td style="text-align:right" class="fw600">${fmtDurH(posTotal)}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+
+    el.innerHTML = `
+      <div class="stat-grid mb16" style="grid-template-columns:repeat(3,1fr)">
+        <div class="stat-card blue"><div class="stat-value">${total.employees}</div><div class="stat-label">Employés</div></div>
+        <div class="stat-card green"><div class="stat-value">${total.shifts}</div><div class="stat-label">Shifts validés</div></div>
+        <div class="stat-card"><div class="stat-value">${fmtDurH(total.minutes)}</div><div class="stat-label">Total heures ${year}</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span>Vue mensuelle — ${year}</span>
+          ${hotelId ? `<span class="text-muted text-sm">${esc(document.querySelector('#an-hotel option:checked')?.textContent || '')}</span>` : ''}
+          ${position ? `<span class="badge badge-position">${esc(position)}</span>` : ''}
+        </div>
+        <div class="an-months-wrap">
+          ${monthRowsHTML}
+        </div>
+      </div>
+
+      ${byPosHTML}`;
+
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state text-muted">Erreur lors du chargement des données.</div>';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

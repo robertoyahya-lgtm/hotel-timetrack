@@ -1478,3 +1478,282 @@ select.form-control {
   .page-body { padding: 16px; }
   .topbar { padding: 0 14px; }
 }
+
+/* ─── PAYROLL REPORT — Position blocks ──────────────────────────────────── */
+
+.pr-report-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.pr-report-period {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--navy-800);
+  letter-spacing: .02em;
+}
+
+/* Individual position block */
+.pr-block {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,.04);
+}
+
+.pr-block-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px;
+  background: var(--navy-50, #f0f4f8);
+  border-bottom: 1px solid var(--gray-200);
+}
+.pr-block-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--navy-800);
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.pr-block-meta {
+  font-size: 12px;
+  color: var(--gray-500);
+}
+.pr-block-total {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--emerald-700, #047857);
+  min-width: 80px;
+  text-align: right;
+}
+
+/* Table inside each block */
+.pr-block-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.pr-block-table thead th {
+  padding: 8px 16px;
+  background: var(--gray-50);
+  color: var(--gray-500);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  border-bottom: 1px solid var(--gray-100);
+}
+.pr-block-table tbody tr {
+  border-bottom: 1px solid var(--gray-100);
+  transition: background .12s;
+}
+.pr-block-table tbody tr:last-child { border-bottom: none; }
+.pr-block-table tbody tr:hover { background: var(--gray-50); }
+.pr-block-table tbody td {
+  padding: 10px 16px;
+  color: var(--gray-800);
+}
+.pr-block-table tfoot td {
+  padding: 10px 16px;
+  font-size: 13px;
+  background: var(--gray-50);
+  border-top: 2px solid var(--gray-200);
+}
+.pr-block-foot-label {
+  color: var(--gray-600);
+  font-weight: 600;
+}
+.pr-block-foot-total {
+  font-weight: 800;
+  color: var(--navy-800);
+}
+
+/* Sub-unit pill inside employee rows (LCPP) */
+.pr-subunit-pill {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 20px;
+  background: var(--emerald-50, #ecfdf5);
+  color: var(--emerald-700, #047857);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.pr-subunit-row td { border-top: none !important; }
+
+/* Grand total bar */
+.pr-grand-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  margin-top: 6px;
+  margin-bottom: 4px;
+  background: var(--navy-800);
+  border-radius: 10px;
+  color: #fff;
+}
+.pr-grand-total-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  opacity: .85;
+}
+.pr-grand-total-value {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -.02em;
+}
+
+/* Collapsible "By Hotel" detail section */
+.pr-details-section {
+  border: 1px solid var(--gray-200);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0;
+  overflow: hidden;
+}
+.pr-details-section summary {
+  padding: 12px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--navy-700);
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pr-details-section summary::before {
+  content: '▶';
+  font-size: 10px;
+  transition: transform .2s;
+  color: var(--gray-400);
+}
+.pr-details-section[open] summary::before { transform: rotate(90deg); }
+.pr-details-section .table-wrap { padding: 0 0 4px; }
+
+/* ─── LONG-RUNNING BANNER (forgotten clock-outs) ─────────────────────────── */
+
+.long-run-banner {
+  margin: 0;
+  padding: 0;
+  animation: slideDown .25s ease;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.long-run-inner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 24px;
+  background: #fff8e7;
+  border-bottom: 2px solid #f5a623;
+  flex-wrap: wrap;
+}
+.long-run-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.long-run-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.long-run-text strong { font-size: 14px; color: #7c4a00; }
+.long-run-text span   { font-size: 13px; color: #9a5e00; }
+.long-run-btn {
+  background: #f5a623;
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s;
+}
+.long-run-btn:hover { background: #e09410; }
+.long-run-dismiss {
+  background: none;
+  border: none;
+  color: #9a5e00;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  opacity: .7;
+  transition: opacity .15s;
+  flex-shrink: 0;
+}
+.long-run-dismiss:hover { opacity: 1; }
+
+/* ─── ANALYTICS PAGE ─────────────────────────────────────────────────────── */
+
+.an-months-wrap {
+  padding: 12px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.an-month-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 90px 100px;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+.an-month-empty .an-month-bar-wrap { opacity: .3; }
+.an-month-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: var(--gray-500);
+  text-transform: uppercase;
+}
+.an-month-bar-wrap {
+  height: 16px;
+  background: var(--gray-100);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.an-month-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--emerald-600, #059669), var(--emerald-400, #34d399));
+  border-radius: 8px;
+  transition: width .45s cubic-bezier(.4,0,.2,1);
+  min-width: 2px;
+}
+.an-month-hours {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--navy-800);
+  text-align: right;
+}
+.an-month-shifts {
+  font-size: 11px;
+  color: var(--gray-400);
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .pr-block-head { flex-wrap: wrap; gap: 6px; }
+  .pr-grand-total-value { font-size: 20px; }
+  .an-month-row { grid-template-columns: 40px 1fr 70px; }
+  .an-month-shifts { display: none; }
+  .long-run-inner { padding: 12px 16px; }
+}

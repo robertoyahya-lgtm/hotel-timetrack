@@ -553,6 +553,39 @@ app.delete('/api/shifts/:id', auth('admin'), (req, res) => {
   res.json({ ok: true });
 });
 
+// Long-running active shifts (potential forgotten clock-outs).
+// Returns active shifts that have been open longer than `threshold` hours (default 8).
+// Scoping: employees see only their own; managers see their hotel; admin sees all.
+app.get('/api/shifts/long-running', auth(), (req, res) => {
+  const { user } = req;
+  const threshold = parseFloat(req.query.threshold) || 8;
+  const now = Date.now();
+
+  let shifts = db.read('shifts.json').filter(s => s.status === 'active');
+  if (user.role === 'employee' || user.role === 'supervisor') {
+    shifts = shifts.filter(s => s.userId === user.id);
+  } else if (user.role === 'manager') {
+    shifts = shifts.filter(s => s.hotelId === user.hotelId);
+  }
+  // admin / accounting see all
+
+  const result = shifts
+    .map(s => ({
+      id:           s.id,
+      userId:       s.userId,
+      userName:     s.userName,
+      hotelName:    s.hotelName,
+      subUnit:      s.subUnit,
+      position:     s.position,
+      startTime:    s.startTime,
+      hoursElapsed: parseFloat(((now - new Date(s.startTime)) / 3600000).toFixed(2))
+    }))
+    .filter(s => s.hoursElapsed >= threshold)
+    .sort((a, b) => b.hoursElapsed - a.hoursElapsed);
+
+  res.json(result);
+});
+
 // ─── CORRECTIONS ─────────────────────────────────────────────────────────────
 
 app.get('/api/corrections', auth(), (req, res) => {
@@ -912,6 +945,80 @@ app.get('/api/payroll/export/csv', auth('accounting', 'admin', 'manager'), (req,
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}${slugPos}${slugSub}.csv"`);
   res.send(csv);
+});
+
+// ─── ANALYTICS ───────────────────────────────────────────────────────────────
+// Historical view of VALIDATED shifts, grouped by month.
+// Query: year (YYYY), hotelId (optional), position (optional)
+app.get('/api/analytics/summary', auth('accounting', 'admin', 'manager'), (req, res) => {
+  const { year, hotelId, position } = req.query;
+  const targetYear = parseInt(year) || new Date().getFullYear();
+  const { user } = req;
+
+  let shifts = db.read('shifts.json').filter(s => s.status === 'validated' && s.endTime);
+  if (user.role === 'manager') shifts = shifts.filter(s => s.hotelId === user.hotelId);
+  if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
+
+  const users = db.read('users.json');
+  const usersById = Object.fromEntries(users.map(u => [u.id, u]));
+  if (position) shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
+
+  // Restrict to the requested calendar year (local start-of-year to end-of-year)
+  const yearFrom = `${targetYear}-01-01`;
+  const yearTo   = `${targetYear}-12-31T23:59:59.999Z`;
+  shifts = shifts.filter(s => s.startTime >= yearFrom && s.startTime <= yearTo);
+
+  // Monthly buckets (0-indexed)
+  const monthBuckets = Array.from({ length: 12 }, (_, i) => ({
+    month:     i + 1,
+    label:     new Date(targetYear, i, 1).toLocaleString('en-CA', { month: 'long' }),
+    shifts:    0,
+    minutes:   0,
+    employees: new Set()
+  }));
+
+  // Per-position monthly breakdown
+  const byPositionMap = {}; // { pos: [{shifts,minutes}×12] }
+  // Per-hotel monthly breakdown
+  const byHotelMap    = {}; // { hotelId: {name, months:[{s,m}×12]} }
+
+  shifts.forEach(s => {
+    const m   = new Date(s.startTime).getMonth(); // 0-indexed
+    const pos = shiftPosition(s, usersById);
+
+    monthBuckets[m].shifts++;
+    monthBuckets[m].minutes += s.totalMinutes || 0;
+    monthBuckets[m].employees.add(s.userId);
+
+    if (!byPositionMap[pos])
+      byPositionMap[pos] = Array.from({ length: 12 }, () => ({ shifts: 0, minutes: 0 }));
+    byPositionMap[pos][m].shifts++;
+    byPositionMap[pos][m].minutes += s.totalMinutes || 0;
+
+    if (!byHotelMap[s.hotelId])
+      byHotelMap[s.hotelId] = {
+        name:   s.hotelName,
+        months: Array.from({ length: 12 }, () => ({ shifts: 0, minutes: 0 }))
+      };
+    byHotelMap[s.hotelId].months[m].shifts++;
+    byHotelMap[s.hotelId].months[m].minutes += s.totalMinutes || 0;
+  });
+
+  res.json({
+    year: targetYear,
+    months: monthBuckets.map(m => ({ ...m, employees: m.employees.size })),
+    byPosition: Object.entries(byPositionMap)
+      .map(([pos, data]) => ({ position: pos, months: data }))
+      .sort((a, b) => a.position.localeCompare(b.position)),
+    byHotel: Object.entries(byHotelMap)
+      .map(([id, h]) => ({ hotelId: id, name: h.name, months: h.months }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    total: {
+      shifts:    shifts.length,
+      minutes:   shifts.reduce((t, s) => t + (s.totalMinutes || 0), 0),
+      employees: new Set(shifts.map(s => s.userId)).size
+    }
+  });
 });
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
