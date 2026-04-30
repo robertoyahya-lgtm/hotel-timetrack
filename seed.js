@@ -38,10 +38,37 @@ function writeJson(file, data) {
 
 async function main() {
   // 1. Ensure every data file exists with a sensible default.
-  if (!fs.existsSync(FILES.hotels))      writeJson(FILES.hotels,      []);
   if (!fs.existsSync(FILES.shifts))      writeJson(FILES.shifts,      []);
   if (!fs.existsSync(FILES.corrections)) writeJson(FILES.corrections, []);
   if (!fs.existsSync(FILES.users))       writeJson(FILES.users,       []);
+
+  // Hotels are configuration, not user data — always ensure the canonical list
+  // exists with proper IDs and the isGroup flag for Les Chambres Petit Prince.
+  const DEFAULT_HOTELS = [
+    { id: 'd0bd4e43-c48c-49ef-880d-fabab4f11df6', name: 'The Cove',       subUnits: [] },
+    { id: '1149a9e7-6a01-4981-9145-558b956637d2', name: 'Maison de Paris', subUnits: [] },
+    {
+      id: 'ae3dac83-9cd9-469c-9236-4641cffb1736',
+      name: 'Les Chambres Petit Prince',
+      isGroup: true,
+      subUnits: ['Victoria', 'Mystral', 'The Mile End Parc', 'The Little Prince Rooms'],
+    },
+    { id: 'e444cbd1-0088-406d-8292-8c9b4b89d631', name: 'The Alexander', subUnits: [] },
+    { id: '645cbf99-b5ae-4e94-90e4-dec9aeacd8d1', name: 'Hotel Monroe',  subUnits: [] },
+  ];
+  if (!fs.existsSync(FILES.hotels)) {
+    writeJson(FILES.hotels, DEFAULT_HOTELS);
+    console.log('  Hotels file created with default properties.');
+  } else {
+    // Repair: if any hotel is missing its id, replace the whole file with the
+    // canonical list (merges nothing — IDs are stable and known in advance).
+    const existing = readJson(FILES.hotels, []);
+    const anyMissingId = existing.some(h => !h.id);
+    if (anyMissingId) {
+      writeJson(FILES.hotels, DEFAULT_HOTELS);
+      console.log('  Hotels file repaired: IDs were missing, canonical list restored.');
+    }
+  }
 
   // 2. Bootstrap a starter admin only when the system has no users at all.
   const users = readJson(FILES.users, []);

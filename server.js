@@ -236,6 +236,18 @@ app.post('/api/users', auth('admin', 'manager'), async (req, res) => {
 
   const hotels  = db.read('hotels.json');
   const hotel   = hotels.find(h => h.id === hotelId);
+
+  // Validate hotel reference — prevents "undefined" strings from slipping through
+  if (hotelId && !hotel)
+    return res.status(400).json({ error: 'Unknown hotel. Please select a valid hotel from the list.' });
+  // Group hotels (e.g. Les Chambres Petit Prince) require a specific property (sub-unit)
+  if (hotel?.isGroup) {
+    if (!subUnit)
+      return res.status(400).json({ error: `A property is required for ${hotel.name}. Choose: ${hotel.subUnits.join(', ')}` });
+    if (!hotel.subUnits.includes(subUnit))
+      return res.status(400).json({ error: `"${subUnit}" is not a valid property for ${hotel.name}. Choose: ${hotel.subUnits.join(', ')}` });
+  }
+
   const hashed  = await bcrypt.hash(password, 10);
 
   const user = {
@@ -307,6 +319,15 @@ app.put('/api/users/:id', auth('admin', 'manager'), async (req, res) => {
       const hotel = db.read('hotels.json').find(h => h.id === updates.hotelId);
       if (!hotel) return res.status(400).json({ error: 'Unknown hotel' });
       updates.hotelName = hotel.name;
+      // Group hotels require a valid property (sub-unit)
+      const incomingSubUnit = Object.prototype.hasOwnProperty.call(updates, 'subUnit')
+        ? updates.subUnit : target.subUnit;
+      if (hotel.isGroup) {
+        if (!incomingSubUnit)
+          return res.status(400).json({ error: `A property is required for ${hotel.name}` });
+        if (!hotel.subUnits.includes(incomingSubUnit))
+          return res.status(400).json({ error: `"${incomingSubUnit}" is not a valid property for ${hotel.name}` });
+      }
       // If the new hotel doesn't include the previous sub-unit, clear it
       // unless the caller is sending a fresh subUnit value.
       if (!Object.prototype.hasOwnProperty.call(updates, 'subUnit')) {
@@ -413,14 +434,20 @@ app.post('/api/shifts/start', auth('employee', 'manager', 'supervisor'), (req, r
   if (already) return res.status(409).json({ error: 'You are already clocked in', shift: already });
 
   // Resolve position from the user record (JWT may be stale if admin re-tagged
-  // the employee mid-session). Fall back: managers & supervisors don't always
-  // have a position in the admin list, so use a role-based default.
+  // the employee mid-session).
+  // For managers/supervisors: "Unassigned" means no real operational position was set,
+  // so we use a role-based label as the fallback rather than stamping "Unassigned".
   const fallbackByRole = { manager: 'Manager', supervisor: 'Supervisor' };
-  const stampPosition  = fresh?.position || user.position || fallbackByRole[user.role] || 'Unassigned';
+  const rawPosition    = fresh?.position || user.position || '';
+  const isUnassigned   = !rawPosition || rawPosition === 'Unassigned';
+  const stampPosition  = (isUnassigned && fallbackByRole[user.role])
+    ? fallbackByRole[user.role]
+    : (rawPosition || 'Unassigned');
 
   const shift = {
     id: uuidv4(),
     userId: user.id,     userName: fresh?.name || user.name,
+    userRole: fresh?.role || user.role,
     hotelId, hotelName, subUnit,
     position: stampPosition,
     startTime: new Date().toISOString(),
@@ -660,7 +687,7 @@ function shiftPosition(shift, usersById) {
 }
 
 app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, res) => {
-  const { from, to, hotelId, position } = req.query;
+  const { from, to, hotelId, position, subUnit } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
   const { user } = req;
@@ -668,6 +695,7 @@ app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, re
 
   if (user.role === 'manager') shifts = shifts.filter(s => s.hotelId === user.hotelId);
   if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
+  if (subUnit) shifts = shifts.filter(s => s.subUnit === subUnit);
   shifts = shifts.filter(s => s.startTime >= from && s.startTime <= to + 'T23:59:59.999Z');
 
   const users  = db.read('users.json');
@@ -679,9 +707,14 @@ app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, re
     shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
   }
 
-  const byEmp     = {};
-  const byHotel   = {};
+  const byEmp      = {};
+  const byHotel    = {};
   const byPosition = {};
+  const bySubUnit  = {};  // for group hotels (Les Chambres Petit Prince)
+
+  const groupHotelIds = new Set(
+    db.read('hotels.json').filter(h => h.isGroup).map(h => h.id)
+  );
 
   shifts.forEach(s => {
     const u   = usersById[s.userId];
@@ -692,7 +725,7 @@ app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, re
         userId: s.userId, name: s.userName,
         hotelId: s.hotelId, hotelName: s.hotelName, subUnit: s.subUnit,
         position: pos,
-        role: u?.role || 'employee', shifts: 0, minutes: 0
+        role: u?.role || s.userRole || 'employee', shifts: 0, minutes: 0
       };
     }
     byEmp[s.userId].shifts++;
@@ -705,27 +738,36 @@ app.get('/api/payroll/summary', auth('accounting', 'admin', 'manager'), (req, re
     if (!byPosition[pos]) byPosition[pos] = { position: pos, shifts: 0, minutes: 0 };
     byPosition[pos].shifts++;
     byPosition[pos].minutes += s.totalMinutes || 0;
+
+    // Track per-sub-unit for group hotels
+    if (groupHotelIds.has(s.hotelId) && s.subUnit) {
+      const key = s.subUnit;
+      if (!bySubUnit[key]) bySubUnit[key] = { name: s.subUnit, shifts: 0, minutes: 0 };
+      bySubUnit[key].shifts++;
+      bySubUnit[key].minutes += s.totalMinutes || 0;
+    }
   });
 
   res.json({
     from, to,
-    filter: { hotelId: hotelId || null, position: position || null },
+    filter: { hotelId: hotelId || null, subUnit: subUnit || null, position: position || null },
     totalShifts: shifts.length,
     totalMinutes: shifts.reduce((t, s) => t + (s.totalMinutes || 0), 0),
     byEmployee: Object.values(byEmp).sort((a, b) =>
-      a.hotelName.localeCompare(b.hotelName) ||
+      (a.hotelName || '').localeCompare(b.hotelName || '') ||
       (a.position || '').localeCompare(b.position || '') ||
       a.name.localeCompare(b.name)),
     byHotel: Object.values(byHotel),
     byPosition: Object.values(byPosition).sort((a, b) =>
-      a.position.localeCompare(b.position))
+      a.position.localeCompare(b.position)),
+    bySubUnit: Object.keys(bySubUnit).length > 0 ? bySubUnit : null
   });
 });
 
 // Excel export
 app.get('/api/payroll/export/xlsx', auth('accounting', 'admin', 'manager'), async (req, res) => {
   const ExcelJS = require('exceljs');
-  const { from, to, hotelId, position } = req.query;
+  const { from, to, hotelId, position, subUnit } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
   const users  = db.read('users.json');
@@ -735,6 +777,7 @@ app.get('/api/payroll/export/xlsx', auth('accounting', 'admin', 'manager'), asyn
   // Managers can only export their own hotel's payroll.
   if (req.user.role === 'manager') shifts = shifts.filter(s => s.hotelId === req.user.hotelId);
   if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
+  if (subUnit) shifts = shifts.filter(s => s.subUnit === subUnit);
   if (position) shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
   shifts.sort((a, b) =>
     a.hotelName.localeCompare(b.hotelName) ||
@@ -821,16 +864,17 @@ app.get('/api/payroll/export/xlsx', auth('accounting', 'admin', 'manager'), asyn
     val:   s.validatedByName || '—', notes: s.notes || ''
   }));
 
-  const slug = position ? `-${position.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
+  const slugPos = position ? `-${position.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
+  const slugSub = subUnit  ? `-${subUnit.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}${slug}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}${slugPos}${slugSub}.xlsx"`);
   await wb.xlsx.write(res);
   res.end();
 });
 
 // CSV export
 app.get('/api/payroll/export/csv', auth('accounting', 'admin', 'manager'), (req, res) => {
-  const { from, to, hotelId, position } = req.query;
+  const { from, to, hotelId, position, subUnit } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to required' });
 
   const users = db.read('users.json');
@@ -840,6 +884,7 @@ app.get('/api/payroll/export/csv', auth('accounting', 'admin', 'manager'), (req,
   // Managers can only export their own hotel's payroll.
   if (req.user.role === 'manager') shifts = shifts.filter(s => s.hotelId === req.user.hotelId);
   if (hotelId) shifts = shifts.filter(s => s.hotelId === hotelId);
+  if (subUnit) shifts = shifts.filter(s => s.subUnit === subUnit);
   if (position) shifts = shifts.filter(s => shiftPosition(s, usersById) === position);
   shifts.sort((a, b) =>
     a.hotelName.localeCompare(b.hotelName) ||
@@ -847,13 +892,14 @@ app.get('/api/payroll/export/csv', auth('accounting', 'admin', 'manager'), (req,
     a.userName.localeCompare(b.userName));
 
   const tf = iso => new Date(iso).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const rows = [['Employee', 'Hotel', 'Sub-unit', 'Position', 'Role', 'Date', 'Start', 'End', 'Hours', 'Validated By']];
+  const rows = [['Employee', 'Role', 'Hotel', 'Property', 'Position', 'Date', 'Start', 'End', 'Hours', 'Validated By']];
   shifts.forEach(s => {
     const u = usersById[s.userId];
     rows.push([
-      s.userName, s.hotelName, s.subUnit || '',
+      s.userName,
+      s.userRole || u?.role || 'employee',
+      s.hotelName, s.subUnit || '',
       shiftPosition(s, usersById),
-      u?.role || 'employee',
       s.startTime.slice(0, 10), tf(s.startTime), tf(s.endTime),
       parseFloat((s.totalMinutes / 60).toFixed(2)),
       s.validatedByName || ''
@@ -861,9 +907,10 @@ app.get('/api/payroll/export/csv', auth('accounting', 'admin', 'manager'), (req,
   });
 
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const slug = position ? `-${position.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
+  const slugPos = position ? `-${position.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
+  const slugSub = subUnit  ? `-${subUnit.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` : '';
   res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}${slug}.csv"`);
+  res.setHeader('Content-Disposition', `attachment; filename="payroll-${from}-to-${to}${slugPos}${slugSub}.csv"`);
   res.send(csv);
 });
 
@@ -957,6 +1004,35 @@ async function bootstrap() {
       }
       db.write('users.json', usersForMigration);
       console.log(`  Migrated ${touched} user(s) to position="Unassigned".`);
+    }
+  }
+
+  // Repair users whose hotelId doesn't match any known hotel.
+  // Root cause: hotels.json previously had no `id` fields, so the hotel dropdown
+  // saved the string "undefined" instead of a real UUID. We fix this by matching
+  // on hotelName when possible; otherwise we clear the stale hotelId.
+  {
+    const hotelsNow = db.read('hotels.json');
+    const usersNow  = db.read('users.json');
+    let repaired = 0;
+    usersNow.forEach(u => {
+      if (!u.hotelId) return; // null/undefined is fine
+      const hotelExists = hotelsNow.some(h => h.id === u.hotelId);
+      if (!hotelExists) {
+        const byName = hotelsNow.find(h => h.name === u.hotelName);
+        if (byName) {
+          u.hotelId = byName.id;  // recover the correct UUID from the name
+        } else {
+          u.hotelId   = null;
+          u.hotelName = null;
+          u.subUnit   = null;
+        }
+        repaired++;
+      }
+    });
+    if (repaired > 0) {
+      db.write('users.json', usersNow);
+      console.log(`  Repaired ${repaired} user(s) with invalid hotelId.`);
     }
   }
 

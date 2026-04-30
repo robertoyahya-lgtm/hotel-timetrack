@@ -583,22 +583,41 @@ async function renderOverview(user) {
       </div>
 
       ${(d.activeByHotel && d.activeByHotel.length > 0) ? `
-        <div class="card mb12">
-          <div class="card-head">
-            <span>Active by Property${d.activeNow > 0 ? ' <span class="dot-live"></span>' : ''}</span>
-            <span class="text-muted text-sm">Click a property to filter the list below</span>
-          </div>
-          <div class="hotel-active-grid" id="ov-hotel-grid">
-            <div class="hotel-active-chip ${overviewHotelFilter === null ? 'is-active' : ''}" onclick="setOverviewHotelFilter(null)">
-              <span class="hotel-active-name">All Properties</span>
-              <span class="hotel-active-count">${d.activeNow}</span>
+        <div class="card mb12 prop-filter-card">
+          <div class="prop-filter-header">
+            <div class="prop-filter-title">
+              ${d.activeNow > 0 ? '<span class="dot-live"></span>' : ''}
+              Active by Property
             </div>
+            <div class="prop-filter-hint">Select a property to filter the shifts below</div>
+          </div>
+          <div class="prop-filter-grid" id="ov-hotel-grid">
+            <button class="prop-filter-item ${overviewHotelFilter === null ? 'is-selected' : ''}" onclick="setOverviewHotelFilter(null)">
+              <div class="prop-filter-left">
+                <div class="prop-filter-icon">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="12" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 016 0v2"/><path d="M8 10v2"/></svg>
+                </div>
+                <span class="prop-filter-name">All Properties</span>
+              </div>
+              <div class="prop-filter-count ${d.activeNow > 0 ? 'is-live' : ''}">
+                ${d.activeNow > 0 ? '<span class="prop-live-dot"></span>' : ''}
+                <span>${d.activeNow}</span>
+              </div>
+            </button>
             ${d.activeByHotel.map(h => `
-              <div class="hotel-active-chip ${overviewHotelFilter === h.hotelId ? 'is-active' : ''} ${h.count > 0 ? 'has-active' : ''}"
+              <button class="prop-filter-item ${overviewHotelFilter === h.hotelId ? 'is-selected' : ''} ${h.count > 0 ? 'has-staff' : ''}"
                    onclick="setOverviewHotelFilter('${h.hotelId}')">
-                <span class="hotel-active-name">${esc(h.hotelName)}</span>
-                <span class="hotel-active-count">${h.count}</span>
-              </div>`).join('')}
+                <div class="prop-filter-left">
+                  <div class="prop-filter-icon">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="10" height="11" rx="1"/><path d="M6 14V9h4v5M6 6h1M9 6h1M6 3V1M10 3V1"/></svg>
+                  </div>
+                  <span class="prop-filter-name">${esc(h.hotelName)}</span>
+                </div>
+                <div class="prop-filter-count ${h.count > 0 ? 'is-live' : ''}">
+                  ${h.count > 0 ? '<span class="prop-live-dot"></span>' : ''}
+                  <span>${h.count}</span>
+                </div>
+              </button>`).join('')}
           </div>
         </div>` : ''}
 
@@ -647,11 +666,12 @@ function renderOverviewActiveTable() {
   bodyEl.innerHTML = rows.length === 0
     ? `<div class="empty-state text-muted" style="padding:20px">${overviewHotelFilter ? 'Nobody on shift at this property right now.' : 'Nobody currently on shift.'}</div>`
     : `<div class="table-wrap"><table>
-        <thead><tr><th>Employee</th><th>Position</th><th>Hotel</th><th>Sub-unit</th><th>Started</th></tr></thead>
+        <thead><tr><th>Employee</th><th>Role</th><th>Position</th><th>Hotel / Property</th><th>Sub-unit</th><th>Started</th></tr></thead>
         <tbody>${rows.map(s => `
           <tr>
             <td class="td-name">${esc(s.userName)}</td>
-            <td>${s.position
+            <td>${roleBadge(s.userRole || 'employee')}</td>
+            <td>${s.position && s.position !== 'Unassigned'
               ? `<span class="badge badge-position">${esc(s.position)}</span>`
               : '<span class="text-muted">—</span>'}</td>
             <td>${esc(s.hotelName || '—')}</td>
@@ -664,12 +684,12 @@ function renderOverviewActiveTable() {
 
 function setOverviewHotelFilter(hotelId) {
   overviewHotelFilter = (hotelId === overviewHotelFilter) ? null : hotelId;
-  // Update chip active class without re-rendering the whole page.
-  document.querySelectorAll('.hotel-active-chip').forEach(c => c.classList.remove('is-active'));
+  // Update button selected state without re-rendering the whole page.
+  document.querySelectorAll('.prop-filter-item').forEach(c => c.classList.remove('is-selected'));
   const target = overviewHotelFilter
-    ? document.querySelector(`.hotel-active-chip[onclick="setOverviewHotelFilter('${overviewHotelFilter}')"]`)
-    : document.querySelector('.hotel-active-chip[onclick="setOverviewHotelFilter(null)"]');
-  if (target) target.classList.add('is-active');
+    ? document.querySelector(`.prop-filter-item[onclick="setOverviewHotelFilter('${overviewHotelFilter}')"]`)
+    : document.querySelector('.prop-filter-item[onclick="setOverviewHotelFilter(null)"]');
+  if (target) target.classList.add('is-selected');
   renderOverviewActiveTable();
 }
 
@@ -738,8 +758,9 @@ async function loadShiftsTable(user) {
       <thead>
         <tr>
           <th>Employee</th>
+          <th>Role</th>
           <th>Position</th>
-          ${user.role === 'admin' ? '<th>Hotel</th>' : ''}
+          <th>Hotel / Property</th>
           <th>Sub-unit</th><th>Date</th><th>Start</th><th>End</th><th>Duration</th><th>Status</th>
           ${canEditShifts ? '<th>Actions</th>' : ''}
         </tr>
@@ -748,10 +769,11 @@ async function loadShiftsTable(user) {
         ${shifts.map(s => `
           <tr>
             <td><div class="td-name">${esc(s.userName)}</div>${s.isCorrection ? '<div class="td-sub">Correction</div>' : ''}</td>
-            <td>${s.position
+            <td>${roleBadge(s.userRole || 'employee')}</td>
+            <td>${s.position && s.position !== 'Unassigned'
               ? `<span class="badge badge-position">${esc(s.position)}</span>`
               : '<span class="text-muted">—</span>'}</td>
-            ${user.role === 'admin' ? `<td>${esc(s.hotelName)}</td>` : ''}
+            <td>${esc(s.hotelName || '—')}</td>
             <td class="text-muted">${esc(s.subUnit || '—')}</td>
             <td>${fmtDate(s.startTime)}</td>
             <td>${fmtTime(s.startTime)}</td>
@@ -1183,7 +1205,7 @@ async function loadEmpTable(hotels) {
 
     el.innerHTML = `<table>
       <thead>
-        <tr><th>Name</th><th>Email</th><th>Role</th><th>Position</th><th>Hotel</th><th>Sub-unit</th><th>Status</th>${canManage ? '<th>Actions</th>' : ''}</tr>
+        <tr><th>Name</th><th>Email</th><th>Role</th><th>Position</th><th>Hotel / Group</th><th>Property / Sub-unit</th><th>Status</th>${canManage ? '<th>Actions</th>' : ''}</tr>
       </thead>
       <tbody>
         ${users.map(u => `
@@ -1191,7 +1213,7 @@ async function loadEmpTable(hotels) {
             <td class="td-name">${esc(u.name)}</td>
             <td class="text-muted">${esc(u.email)}</td>
             <td>${roleBadge(u.role)}</td>
-            <td>${u.position
+            <td>${u.position && u.position !== 'Unassigned'
               ? `<span class="badge badge-position">${esc(u.position)}</span>`
               : '<span class="text-muted">—</span>'}</td>
             <td>${esc(u.hotelName || '—')}</td>
@@ -1232,17 +1254,17 @@ async function openAddEmployee() {
        <option value="supervisor">Supervisor</option>`;
 
   const hotelField = isAdmin
-    ? `<div class="form-group"><label>Hotel</label>
-        <select class="form-control" id="ae-hotel" onchange="updateSubUnits(this,'ae-subunit')">
+    ? `<div class="form-group"><label>Hotel / Company</label>
+        <select class="form-control" id="ae-hotel" onchange="updateSubUnits(this,'ae-subunit','ae-subunit-lbl')">
           <option value="">— No hotel —</option>
-          ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits || [])}'>${esc(h.name)}</option>`).join('')}
+          ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits || [])}' data-isgroup="${h.isGroup ? 'true' : 'false'}">${esc(h.name)}</option>`).join('')}
         </select></div>
-       <div class="form-group"><label>Sub-unit</label>
+       <div class="form-group"><label id="ae-subunit-lbl">Sub-unit / Property</label>
         <select class="form-control" id="ae-subunit"><option value="">— None —</option></select></div>`
-    : `<div class="form-group"><label>Hotel</label>
+    : `<div class="form-group"><label>Hotel / Company</label>
         <input class="form-control" id="ae-hotel-display" value="${esc(myHotel?.name || '—')}" disabled>
         <input type="hidden" id="ae-hotel" value="${esc(me.hotelId || '')}"></div>
-       <div class="form-group"><label>Sub-unit</label>
+       <div class="form-group"><label id="ae-subunit-lbl">${myHotel?.isGroup ? 'Property *' : 'Sub-unit'}</label>
         <select class="form-control" id="ae-subunit">
           <option value="">— None —</option>
           ${(myHotel?.subUnits || []).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
@@ -1272,7 +1294,10 @@ async function openAddEmployee() {
           <select class="form-control" id="ae-position">
             <option value="">— Select a position —</option>
             ${positions.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
-          </select></div>
+          </select>
+          <div id="ae-position-hint" class="text-muted text-sm" style="margin-top:4px;display:none">
+            Managers &amp; supervisors who work on-site should have an operational position (e.g. Receptionist).
+          </div></div>
         ${hotelField}
         <div class="form-group span2"><label>Status</label>
           <select class="form-control" id="ae-active">
@@ -1288,17 +1313,22 @@ async function openAddEmployee() {
   onRoleChange('ae');
 }
 
-// Show "Position *" only when role=employee. For other roles position is optional.
+// Show "Position *" for employees; show hint for manager/supervisor.
 function onRoleChange(prefix) {
   const role = document.getElementById(`${prefix}-role`).value;
   const lbl  = document.getElementById(`${prefix}-position-lbl`);
-  if (lbl) lbl.textContent = role === 'employee' ? 'Position *' : 'Position';
+  const hint = document.getElementById(`${prefix}-position-hint`);
+  if (lbl) lbl.textContent = role === 'employee' ? 'Position *' : 'Operational Position';
+  if (hint) hint.style.display = (role === 'manager' || role === 'supervisor') ? '' : 'none';
 }
 
-function updateSubUnits(hotelSel, subId) {
-  const opt = hotelSel.options[hotelSel.selectedIndex];
-  const sub = JSON.parse(opt.dataset.subunits || '[]');
-  const el  = document.getElementById(subId);
+function updateSubUnits(hotelSel, subId, lblId) {
+  const opt     = hotelSel.options[hotelSel.selectedIndex];
+  const sub     = JSON.parse(opt.dataset.subunits || '[]');
+  const isGroup = opt.dataset.isgroup === 'true';
+  const el      = document.getElementById(subId);
+  const lbl     = lblId ? document.getElementById(lblId) : null;
+  if (lbl) lbl.textContent = isGroup ? 'Property *' : 'Sub-unit';
   el.innerHTML = '<option value="">— None —</option>' +
     sub.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
 }
@@ -1312,8 +1342,13 @@ async function saveNewEmployee() {
   const hotelId  = document.getElementById('ae-hotel').value;
   const subUnit  = document.getElementById('ae-subunit').value;
   const active   = document.getElementById('ae-active').value === 'true';
+  // Check if selected hotel is a group (requires a specific property)
+  const hotelSel = document.getElementById('ae-hotel');
+  const selOpt   = hotelSel?.options?.[hotelSel.selectedIndex];
+  const isGroupH = selOpt?.dataset?.isgroup === 'true';
   if (!name || !email || !pw || !role) { toast('Name, email, password and role are required.', 'err'); return; }
   if (role === 'employee' && !position) { toast('Please pick a position for this employee.', 'err'); return; }
+  if (isGroupH && !subUnit) { toast('Please select a Property within this company group.', 'err'); return; }
   try {
     await POST('/api/users', {
       name, email, password: pw, role,
@@ -1348,24 +1383,26 @@ async function openEditEmployee(id) {
        <option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option>`;
 
   // Hotel field — admin can move users between hotels; manager is pinned.
+  const isGroupHotel = hotel?.isGroup === true;
+  const myHotelForEdit = hotels.find(h => h.id === me.hotelId);
   const hotelField = isAdmin
-    ? `<div class="form-group"><label>Hotel</label>
-        <select class="form-control" id="ee-hotel" onchange="updateSubUnits(this,'ee-subunit')">
+    ? `<div class="form-group"><label>Hotel / Company</label>
+        <select class="form-control" id="ee-hotel" onchange="updateSubUnits(this,'ee-subunit','ee-subunit-lbl')">
           <option value="">— No hotel —</option>
-          ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits || [])}' ${h.id===u.hotelId?'selected':''}>${esc(h.name)}</option>`).join('')}
+          ${hotels.map(h => `<option value="${h.id}" data-subunits='${JSON.stringify(h.subUnits || [])}' data-isgroup="${h.isGroup ? 'true' : 'false'}" ${h.id===u.hotelId?'selected':''}>${esc(h.name)}</option>`).join('')}
         </select></div>
-       <div class="form-group"><label>Sub-unit</label>
+       <div class="form-group"><label id="ee-subunit-lbl">${isGroupHotel ? 'Property *' : 'Sub-unit'}</label>
         <select class="form-control" id="ee-subunit">
           <option value="">— None —</option>
           ${subUnits.map(s => `<option value="${esc(s)}" ${s===u.subUnit?'selected':''}>${esc(s)}</option>`).join('')}
         </select></div>`
-    : `<div class="form-group"><label>Hotel</label>
+    : `<div class="form-group"><label>Hotel / Company</label>
         <input class="form-control" id="ee-hotel-display" value="${esc(hotel?.name || me.hotelName || '—')}" disabled>
         <input type="hidden" id="ee-hotel" value="${esc(me.hotelId || u.hotelId || '')}"></div>
-       <div class="form-group"><label>Sub-unit</label>
+       <div class="form-group"><label id="ee-subunit-lbl">${myHotelForEdit?.isGroup ? 'Property *' : 'Sub-unit'}</label>
         <select class="form-control" id="ee-subunit">
           <option value="">— None —</option>
-          ${(subUnits.length ? subUnits : (hotels.find(h => h.id === me.hotelId)?.subUnits || [])).map(s => `<option value="${esc(s)}" ${s===u.subUnit?'selected':''}>${esc(s)}</option>`).join('')}
+          ${(subUnits.length ? subUnits : (myHotelForEdit?.subUnits || [])).map(s => `<option value="${esc(s)}" ${s===u.subUnit?'selected':''}>${esc(s)}</option>`).join('')}
         </select></div>`;
 
   showModal(`
@@ -1385,11 +1422,14 @@ async function openEditEmployee(id) {
           <select class="form-control" id="ee-role" onchange="onRoleChange('ee')">
             ${roleOptions}
           </select></div>
-        <div class="form-group"><label id="ee-position-lbl">${u.role==='employee'?'Position *':'Position'}</label>
+        <div class="form-group"><label id="ee-position-lbl">${u.role==='employee'?'Position *':'Operational Position'}</label>
           <select class="form-control" id="ee-position">
             <option value="">— None —</option>
             ${positions.map(p => `<option value="${esc(p)}" ${p===u.position?'selected':''}>${esc(p)}</option>`).join('')}
-          </select></div>
+          </select>
+          <div id="ee-position-hint" class="text-muted text-sm" style="margin-top:4px;display:${(u.role==='manager'||u.role==='supervisor')?'':'none'}">
+            If this person works on-site shifts, assign their operational position (e.g. Receptionist).
+          </div></div>
         <div class="form-group"><label>Status</label>
           <select class="form-control" id="ee-active">
             <option value="true"  ${u.active !== false ? 'selected':''}>Active</option>
@@ -1413,8 +1453,13 @@ async function saveEditEmployee(id) {
   const active   = document.getElementById('ee-active').value === 'true';
   const hotelId  = document.getElementById('ee-hotel').value;
   const subUnit  = document.getElementById('ee-subunit').value;
+  // Check if selected hotel is a group (requires a specific property)
+  const hotelSel = document.getElementById('ee-hotel');
+  const selOpt   = hotelSel?.options?.[hotelSel.selectedIndex];
+  const isGroupH = selOpt?.dataset?.isgroup === 'true';
   if (!name || !email) { toast('Name and email are required.', 'err'); return; }
   if (role === 'employee' && !position) { toast('Please pick a position for this employee.', 'err'); return; }
+  if (isGroupH && !subUnit) { toast('Please select a Property within this company group.', 'err'); return; }
   try {
     const body = {
       name, email, role, active,
@@ -1544,6 +1589,9 @@ async function renderPayroll() {
   try { positions = (await GET('/api/positions')).positions || []; } catch {}
   const cur     = periods.find(p => p.isCurrent) || periods[0];
 
+  // Identify which hotels are groups (have sub-units)
+  const groupHotels = hotels.filter(h => h.isGroup && h.subUnits && h.subUnits.length > 0);
+
   body.innerHTML = `
     <div class="card mb12">
       <div class="card-body" style="padding:14px 18px">
@@ -1567,9 +1615,12 @@ async function renderPayroll() {
               <option value="last-30">Last 30 days</option>
             </optgroup>
           </select>
-          <select class="form-control" id="pr-hotel">
+          <select class="form-control" id="pr-hotel" onchange="onPayrollHotelChange(${JSON.stringify(groupHotels)})">
             <option value="">All Hotels</option>
-            ${hotels.map(h => `<option value="${h.id}">${esc(h.name)}</option>`).join('')}
+            ${hotels.map(h => `<option value="${h.id}" data-isgroup="${h.isGroup ? 'true' : 'false'}">${esc(h.name)}</option>`).join('')}
+          </select>
+          <select class="form-control" id="pr-subunit" style="display:none">
+            <option value="">All Properties</option>
           </select>
           <select class="form-control" id="pr-position">
             <option value="">All Positions</option>
@@ -1648,6 +1699,21 @@ function computePayrollPreset(v) {
   return null;
 }
 
+function onPayrollHotelChange(groupHotels) {
+  const sel     = document.getElementById('pr-hotel');
+  const subSel  = document.getElementById('pr-subunit');
+  const hotelId = sel.value;
+  const group   = groupHotels.find(h => h.id === hotelId);
+  if (group) {
+    subSel.innerHTML = '<option value="">All Properties</option>' +
+      group.subUnits.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    subSel.style.display = '';
+  } else {
+    subSel.innerHTML = '<option value="">All Properties</option>';
+    subSel.style.display = 'none';
+  }
+}
+
 async function loadPayroll() {
   const from = document.getElementById('pr-from').value;
   const to   = document.getElementById('pr-to').value;
@@ -1660,14 +1726,18 @@ async function loadPayroll() {
     return;
   }
   const hotelId    = document.getElementById('pr-hotel').value;
+  const subUnit    = (document.getElementById('pr-subunit')?.style.display !== 'none')
+                      ? (document.getElementById('pr-subunit')?.value || '')
+                      : '';
   const position   = document.getElementById('pr-position').value;
 
-  payrollParams = { from, to, hotelId, position };
+  payrollParams = { from, to, hotelId, subUnit, position };
   const el = document.getElementById('pr-output');
   el.innerHTML = '<div class="empty-state text-muted">Loading...</div>';
 
   const qs = new URLSearchParams({ from, to });
   if (hotelId)  qs.set('hotelId',  hotelId);
+  if (subUnit)  qs.set('subUnit',  subUnit);
   if (position) qs.set('position', position);
 
   try {
@@ -1743,11 +1813,11 @@ async function loadPayroll() {
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head">By Hotel</div>
+      <div class="card mb12">
+        <div class="card-head">By Hotel / Group</div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Hotel</th><th>Shifts</th><th>Total Hours</th></tr></thead>
+            <thead><tr><th>Hotel / Group</th><th>Shifts</th><th>Total Hours</th></tr></thead>
             <tbody>
               ${payrollData.byHotel.map(h => `
                 <tr>
@@ -1758,16 +1828,35 @@ async function loadPayroll() {
             </tbody>
           </table>
         </div>
-      </div>`;
+      </div>
+
+      ${payrollData.bySubUnit && Object.keys(payrollData.bySubUnit).length > 0 ? `
+      <div class="card">
+        <div class="card-head">Les Chambres Petit Prince — By Property</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Property</th><th>Shifts</th><th>Total Hours</th></tr></thead>
+            <tbody>
+              ${Object.values(payrollData.bySubUnit).sort((a,b)=>a.name.localeCompare(b.name)).map(p => `
+                <tr>
+                  <td class="td-name">${esc(p.name)}</td>
+                  <td>${p.shifts}</td>
+                  <td class="fw600">${fmtDurH(p.minutes)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}`;
   } catch (e) {
     el.innerHTML = '<div class="empty-state text-muted">Error loading payroll data.</div>';
   }
 }
 
 function payrollExportQS() {
-  const { from, to, hotelId, position } = payrollParams;
+  const { from, to, hotelId, subUnit, position } = payrollParams;
   const qs = new URLSearchParams({ from, to });
   if (hotelId)  qs.set('hotelId',  hotelId);
+  if (subUnit)  qs.set('subUnit',  subUnit);
   if (position) qs.set('position', position);
   return qs.toString();
 }

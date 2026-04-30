@@ -12,6 +12,8 @@ yarn-error.log*
 # Runtime data — contains real emails, hashed passwords, and shift records.
 # Never commit to version control. Restore from seed.js on a new deployment.
 data/
+# Exception: hotels.json is configuration (no PII), track it in version control.
+!data/hotels.json
 _tmp_build_users.js
 
 # Editor / OS

@@ -1,26 +1,32 @@
 [
   {
+    "id": "d0bd4e43-c48c-49ef-880d-fabab4f11df6",
     "name": "The Cove",
     "subUnits": []
   },
   {
+    "id": "1149a9e7-6a01-4981-9145-558b956637d2",
     "name": "Maison de Paris",
     "subUnits": []
   },
   {
+    "id": "ae3dac83-9cd9-469c-9236-4641cffb1736",
     "name": "Les Chambres Petit Prince",
+    "isGroup": true,
     "subUnits": [
+      "Victoria",
       "Mystral",
       "The Mile End Parc",
-      "Victoria",
       "The Little Prince Rooms"
     ]
   },
   {
+    "id": "e444cbd1-0088-406d-8292-8c9b4b89d631",
     "name": "The Alexander",
     "subUnits": []
   },
   {
+    "id": "645cbf99-b5ae-4e94-90e4-dec9aeacd8d1",
     "name": "Hotel Monroe",
     "subUnits": []
   }
