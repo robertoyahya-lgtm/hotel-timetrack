@@ -159,7 +159,7 @@ function isPositionInUse(name) {
   );
 }
 
-app.get('/api/positions', auth('admin', 'accounting', 'manager'), (_req, res) => {
+app.get('/api/positions', auth('admin', 'accounting', 'manager', 'supervisor'), (_req, res) => {
   const positions = readPositions();
   const users = db.read('users.json');
   // Return both the bare list and a usage count so the admin UI can show
@@ -199,9 +199,11 @@ app.delete('/api/positions/:name', auth('admin'), (req, res) => {
 });
 
 // Roles a manager is allowed to create or assign. Admins have no such limit.
-const MANAGER_ASSIGNABLE_ROLES = ['employee', 'supervisor'];
+const MANAGER_ASSIGNABLE_ROLES    = ['employee', 'supervisor'];
+// Supervisors can only create plain employees at their own hotel.
+const SUPERVISOR_ASSIGNABLE_ROLES = ['employee'];
 
-app.post('/api/users', auth('admin', 'manager'), async (req, res) => {
+app.post('/api/users', auth('admin', 'manager', 'supervisor'), async (req, res) => {
   let { name, email, password, role, hotelId, subUnit, position } = req.body;
   if (!name || !email || !password || !role)
     return res.status(400).json({ error: 'name, email, password and role are required' });
@@ -213,6 +215,13 @@ app.post('/api/users', auth('admin', 'manager'), async (req, res) => {
     if (!MANAGER_ASSIGNABLE_ROLES.includes(role))
       return res.status(403).json({ error: 'Managers can only create employees or supervisors.' });
     hotelId = req.user.hotelId;   // pin to manager's hotel
+  }
+
+  // Supervisor-scope: can only create employees at their own hotel.
+  if (req.user.role === 'supervisor') {
+    if (!SUPERVISOR_ASSIGNABLE_ROLES.includes(role))
+      return res.status(403).json({ error: 'Supervisors can only create employees.' });
+    hotelId = req.user.hotelId;   // pin to supervisor's hotel
   }
 
   // Position is required for employees so payroll reports always have a row.
@@ -266,7 +275,7 @@ app.post('/api/users', auth('admin', 'manager'), async (req, res) => {
   res.status(201).json(omit(user, 'password'));
 });
 
-app.put('/api/users/:id', auth('admin', 'manager'), async (req, res) => {
+app.put('/api/users/:id', auth('admin', 'manager', 'supervisor'), async (req, res) => {
   const users = db.read('users.json');
   const idx   = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User not found' });
@@ -289,6 +298,18 @@ app.put('/api/users/:id', auth('admin', 'manager'), async (req, res) => {
       return res.status(403).json({ error: 'Managers cannot move a user to another hotel.' });
     // Pin to the manager's hotel regardless of body.
     updates.hotelId = req.user.hotelId;
+  }
+
+  // Supervisor-scope: can only edit employees at their own hotel, cannot change
+  // roles or move users to another hotel.
+  if (req.user.role === 'supervisor') {
+    if (target.hotelId !== req.user.hotelId)
+      return res.status(403).json({ error: 'Supervisors can only edit users in their own hotel.' });
+    if (!SUPERVISOR_ASSIGNABLE_ROLES.includes(target.role))
+      return res.status(403).json({ error: 'Supervisors can only edit employees.' });
+    if (updates.role && !SUPERVISOR_ASSIGNABLE_ROLES.includes(updates.role))
+      return res.status(403).json({ error: 'Supervisors cannot change user roles.' });
+    delete updates.hotelId; // supervisors cannot move users to another hotel
   }
 
   if (updates.role && !VALID_ROLES.includes(updates.role))
@@ -351,17 +372,22 @@ app.put('/api/users/:id', auth('admin', 'manager'), async (req, res) => {
   res.json(omit(users[idx], 'password'));
 });
 
-// Helper: managers can only flip status on employees/supervisors at own hotel.
+// Helper: who can flip active status on a user.
 function canModifyUser(actor, target) {
   if (actor.role === 'admin') return true;
   if (actor.role === 'manager') {
     return target.hotelId === actor.hotelId
         && MANAGER_ASSIGNABLE_ROLES.includes(target.role);
   }
+  // Supervisors can only deactivate/reactivate plain employees at their hotel
+  if (actor.role === 'supervisor') {
+    return target.hotelId === actor.hotelId
+        && target.role === 'employee';
+  }
   return false;
 }
 
-app.put('/api/users/:id/deactivate', auth('admin', 'manager'), (req, res) => {
+app.put('/api/users/:id/deactivate', auth('admin', 'manager', 'supervisor'), (req, res) => {
   const users = db.read('users.json');
   const idx   = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User not found' });
@@ -373,7 +399,7 @@ app.put('/api/users/:id/deactivate', auth('admin', 'manager'), (req, res) => {
   res.json({ ok: true });
 });
 
-app.put('/api/users/:id/activate', auth('admin', 'manager'), (req, res) => {
+app.put('/api/users/:id/activate', auth('admin', 'manager', 'supervisor'), (req, res) => {
   const users = db.read('users.json');
   const idx   = users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User not found' });
@@ -577,41 +603,66 @@ app.post('/api/shifts/end', auth('employee', 'manager', 'supervisor'), (req, res
   res.json(shifts[idx]);
 });
 
-// Edit shift (manager / admin)
-app.put('/api/shifts/:id', auth('manager', 'admin'), (req, res) => {
+// Edit shift (manager / supervisor / admin)
+// Supervisors are limited to their own hotel. Every edit is appended to the
+// immutable editHistory audit log (before + after values preserved forever).
+app.put('/api/shifts/:id', auth('manager', 'supervisor', 'admin'), (req, res) => {
   const shifts = db.read('shifts.json');
   const idx    = shifts.findIndex(s => s.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Shift not found' });
 
   const { user } = req;
-  if (user.role === 'manager' && shifts[idx].hotelId !== user.hotelId)
-    return res.status(403).json({ error: 'Access denied' });
+  const s = shifts[idx];
+
+  // Scope check for manager and supervisor
+  if ((user.role === 'manager' || user.role === 'supervisor') && s.hotelId !== user.hotelId)
+    return res.status(403).json({ error: 'Access denied — not your hotel.' });
 
   const { startTime, endTime, notes } = req.body;
-  const s = shifts[idx];
   const newStart = startTime || s.startTime;
-  const newEnd   = endTime   || s.endTime;
+  const newEnd   = endTime !== undefined ? (endTime || null) : s.endTime;
   const mins     = newEnd ? Math.round((new Date(newEnd) - new Date(newStart)) / 60000) : s.totalMinutes;
+  const now      = new Date().toISOString();
+
+  // Append to the audit history — every version is preserved
+  const historyEntry = {
+    editedBy:     user.id,
+    editedByName: user.name,
+    editedByRole: user.role,
+    editedAt:     now,
+    oldStartTime: s.startTime,
+    newStartTime: newStart,
+    oldEndTime:   s.endTime,
+    newEndTime:   newEnd,
+    oldMinutes:   s.totalMinutes,
+    newMinutes:   mins,
+    notes:        notes ?? s.notes ?? '',
+  };
 
   shifts[idx] = {
     ...s,
     startTime: newStart, endTime: newEnd, totalMinutes: mins,
     status:    newEnd ? (s.status === 'active' ? 'completed' : s.status) : s.status,
     notes:     notes ?? s.notes,
-    editedBy:  user.id, editedByName: user.name, editedAt: new Date().toISOString()
+    // Last-edit fields (backward compat)
+    editedBy:     user.id,
+    editedByName: user.name,
+    editedAt:     now,
+    // Full immutable history
+    editHistory: [...(s.editHistory || []), historyEntry],
   };
   db.write('shifts.json', shifts);
   res.json(shifts[idx]);
 });
 
 // Validate single shift
-app.post('/api/shifts/:id/validate', auth('manager', 'admin'), (req, res) => {
+app.post('/api/shifts/:id/validate', auth('manager', 'supervisor', 'admin'), (req, res) => {
   const shifts = db.read('shifts.json');
   const idx    = shifts.findIndex(s => s.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Shift not found' });
 
   const { user } = req;
-  if (user.role === 'manager' && shifts[idx].hotelId !== user.hotelId)
+  if ((user.role === 'manager' || user.role === 'supervisor') && shifts[idx].hotelId !== user.hotelId)
     return res.status(403).json({ error: 'Access denied' });
 
   shifts[idx] = {
@@ -625,7 +676,7 @@ app.post('/api/shifts/:id/validate', auth('manager', 'admin'), (req, res) => {
 });
 
 // Batch validate
-app.post('/api/shifts/validate-batch', auth('manager', 'admin'), (req, res) => {
+app.post('/api/shifts/validate-batch', auth('manager', 'supervisor', 'admin'), (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids must be an array' });
 
@@ -635,7 +686,7 @@ app.post('/api/shifts/validate-batch', auth('manager', 'admin'), (req, res) => {
 
   shifts.forEach((s, i) => {
     if (!ids.includes(s.id)) return;
-    if (user.role === 'manager' && s.hotelId !== user.hotelId) return;
+    if ((user.role === 'manager' || user.role === 'supervisor') && s.hotelId !== user.hotelId) return;
     if (s.status === 'validated' || s.status === 'active') return;
     shifts[i] = {
       ...s, status: 'validated', validated: true,
@@ -663,9 +714,9 @@ app.get('/api/shifts/long-running', auth(), (req, res) => {
   const now = Date.now();
 
   let shifts = db.read('shifts.json').filter(s => s.status === 'active');
-  if (user.role === 'employee' || user.role === 'supervisor') {
+  if (user.role === 'employee') {
     shifts = shifts.filter(s => s.userId === user.id);
-  } else if (user.role === 'manager') {
+  } else if (user.role === 'manager' || user.role === 'supervisor') {
     shifts = shifts.filter(s => s.hotelId === user.hotelId);
   }
   // admin / accounting see all

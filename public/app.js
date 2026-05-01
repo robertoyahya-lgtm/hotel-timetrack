@@ -70,13 +70,13 @@ const NAV = {
     { route: 'clock',       label: 'Clock In / Out' },
     { route: 'account',     label: 'My Account' },
   ],
-  // Supervisor: read-only view of one hotel — see employees and their hours,
-  // but cannot edit, validate, approve corrections, or access payroll.
-  // They CAN clock themselves in/out for their own shifts.
+  // Supervisor: can now create employees, edit/validate shifts at their hotel.
   supervisor: [
     { route: 'overview',    label: 'Overview' },
     { route: 'shifts',      label: 'Shifts' },
+    { route: 'validate',    label: 'Validate Hours' },
     { route: 'employees',   label: 'Employees' },
+    { route: 'corrections', label: 'Corrections', badge: 'pending_corrections' },
     { route: 'clock',       label: 'Clock In / Out' },
     { route: 'account',     label: 'My Account' },
   ],
@@ -196,7 +196,7 @@ async function init() {
 
     // Load pending corrections count for badge
     let pending = 0;
-    if (user.role === 'manager' || user.role === 'admin') {
+    if (user.role === 'manager' || user.role === 'admin' || user.role === 'supervisor') {
       try {
         const dash = await GET('/api/dashboard');
         pending = dash.pendingCorrections || 0;
@@ -989,7 +989,7 @@ async function loadShiftsTable(user) {
 
     if (shifts.length === 0) { el.innerHTML = '<div class="empty-state text-muted">No shifts found.</div>'; return; }
 
-    const canEditShifts = user.role === 'admin' || user.role === 'manager';
+    const canEditShifts = user.role === 'admin' || user.role === 'manager' || user.role === 'supervisor';
     el.innerHTML = `<table>
       <thead>
         <tr>
@@ -1053,38 +1053,59 @@ async function openEditShift(shiftId) {
   const s = shifts.find(x => x.id === shiftId);
   if (!s) return;
 
-  showModal(`
+  // Audit history — show all past edits if any
+  const histHTML = (s.editHistory?.length > 0) ? `
+    <div class="edit-history">
+      <div class="edit-history-title">Historique des modifications</div>
+      ${[...s.editHistory].reverse().map(h => `
+        <div class="edit-history-row">
+          <span class="edit-history-who">${esc(h.editedByName)} (${esc(h.editedByRole)})</span>
+          <span class="edit-history-when">${fmtDate(h.editedAt)} ${fmtTime(h.editedAt)}</span>
+          <div class="edit-history-change">
+            ${h.oldStartTime !== h.newStartTime
+              ? `Arrivée : <s>${fmtTime(h.oldStartTime)}</s> → <strong>${fmtTime(h.newStartTime)}</strong> `
+              : ''}
+            ${h.oldEndTime !== h.newEndTime
+              ? `Départ : <s>${h.oldEndTime ? fmtTime(h.oldEndTime) : '—'}</s> → <strong>${h.newEndTime ? fmtTime(h.newEndTime) : '—'}</strong>`
+              : ''}
+            ${h.notes ? `<div class="text-muted text-sm mt4">"${esc(h.notes)}"</div>` : ''}
+          </div>
+        </div>`).join('')}
+    </div>` : '';
+
+  showModalLg(`
     <div class="modal-head">
-      <div class="modal-head-title">Edit Shift</div>
+      <div class="modal-head-title">Modifier le shift — ${esc(s.userName)}</div>
       <button class="modal-close" onclick="closeModal()">&#10005;</button>
     </div>
     <div class="modal-body">
-      <div class="form-grid">
+      <div class="edit-shift-context">
+        <span>${esc(s.hotelName)}${s.subUnit ? ' — ' + esc(s.subUnit) : ''}</span>
+        <span class="text-muted">·</span>
+        <span>${s.position || '—'}</span>
+        <span class="text-muted">·</span>
+        <span>${fmtDate(s.startTime)}</span>
+        ${s.editHistory?.length > 0 ? `<span class="edit-badge">Modifié ${s.editHistory.length}×</span>` : ''}
+      </div>
+      <div class="form-grid mt12">
         <div class="form-group">
-          <label>Employee</label>
-          <input class="form-control" value="${esc(s.userName)}" readonly>
-        </div>
-        <div class="form-group">
-          <label>Hotel</label>
-          <input class="form-control" value="${esc(s.hotelName)}${s.subUnit ? ' — ' + esc(s.subUnit) : ''}" readonly>
-        </div>
-        <div class="form-group">
-          <label>Start Time *</label>
+          <label>Arrivée *</label>
           <input class="form-control" type="datetime-local" id="es-start" value="${toLocalDTInput(s.startTime)}">
         </div>
         <div class="form-group">
-          <label>End Time</label>
+          <label>Départ</label>
           <input class="form-control" type="datetime-local" id="es-end" value="${toLocalDTInput(s.endTime)}">
         </div>
         <div class="form-group span2">
-          <label>Notes (reason for edit)</label>
-          <textarea class="form-control" id="es-notes">${esc(s.notes||'')}</textarea>
+          <label>Motif de la modification <span class="text-muted text-sm">(conservé dans l'historique)</span></label>
+          <textarea class="form-control" id="es-notes" placeholder="Ex : Théo a commencé à 7h45, non 8h00">${esc(s.notes||'')}</textarea>
         </div>
       </div>
+      ${histHTML}
     </div>
     <div class="modal-foot">
-      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveEditShift('${s.id}')">Save Changes</button>
+      <button class="btn btn-secondary" onclick="closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="saveEditShift('${s.id}')">Enregistrer</button>
     </div>
   `);
 }
@@ -1093,17 +1114,18 @@ async function saveEditShift(id) {
   const start = document.getElementById('es-start').value;
   const end   = document.getElementById('es-end').value;
   const notes = document.getElementById('es-notes').value;
-  if (!start) { toast('Start time is required.', 'err'); return; }
+  if (!start) { toast('L\'heure d\'arrivée est requise.', 'err'); return; }
   try {
     await PUT(`/api/shifts/${id}`, {
       startTime: new Date(start).toISOString(),
       endTime:   end ? new Date(end).toISOString() : null,
       notes
     });
-    toast('Shift updated.', 'ok');
+    toast('Shift mis à jour ✓', 'ok');
     closeModal();
     loadShiftsTable(getUser());
-  } catch (e) { toast(e.error || 'Error saving.', 'err'); }
+    loadValTable(getUser()); // refresh validate table if open
+  } catch (e) { toast(e?.error || 'Erreur lors de l\'enregistrement.', 'err'); }
 }
 
 // ── Validate hours ────────────────────────────────────────────────────────────
@@ -1185,7 +1207,7 @@ async function loadValTable(user) {
           <th class="th-check"><input type="checkbox" id="chk-all" title="Select all"></th>
           <th>Employé</th>
           ${user.role === 'admin' ? '<th>Propriété</th>' : ''}
-          <th>Date</th><th>Début</th><th>Fin</th><th>Durée</th><th>GPS</th><th>Statut</th>
+          <th>Date</th><th>Début</th><th>Fin</th><th>Durée</th><th>GPS</th><th>Statut</th><th></th>
         </tr>
       </thead>
       <tbody>
@@ -1202,7 +1224,13 @@ async function loadValTable(user) {
             <td>${s.endTime ? fmtTime(s.endTime) : '<span class="text-muted">—</span>'}</td>
             <td class="fw600">${s.totalMinutes ? fmtDur(s.totalMinutes) : '—'}</td>
             <td>${geoBadgeHtml(s)}</td>
-            <td>${badgeFor(s.status)}${s.validatedByName ? `<div class="td-sub">par ${esc(s.validatedByName)}</div>` : ''}</td>
+            <td>
+              ${badgeFor(s.status)}${s.validatedByName ? `<div class="td-sub">par ${esc(s.validatedByName)}</div>` : ''}
+              ${s.editHistory?.length > 0 ? `<div class="td-sub" title="${s.editHistory.length} modification(s)">✏️ ×${s.editHistory.length}</div>` : ''}
+            </td>
+            <td>
+              ${s.status !== 'active' ? `<button class="btn btn-xs btn-secondary" onclick="openEditShift('${s.id}')">Modifier</button>` : ''}
+            </td>
           </tr>`).join('')}
       </tbody>
     </table>`;
@@ -1367,10 +1395,11 @@ async function renderEmployees() {
   const body   = document.getElementById('page-body');
   const user   = getUser();
   const hotels = await GET('/api/hotels');
-  // Admin & manager can manage employees. Manager-scope is enforced server-side
-  // (own hotel only, employees & supervisors only).
-  const canManage    = user.role === 'admin' || user.role === 'manager';
+  // Admin, manager and supervisor can manage employees.
+  // Scope is enforced server-side (own hotel, limited role options).
+  const canManage    = user.role === 'admin' || user.role === 'manager' || user.role === 'supervisor';
   const isAdmin      = user.role === 'admin';
+  const isSupervisor = user.role === 'supervisor';
 
   // Positions are admin-managed; admin/accounting/manager can read.
   let positions = [];
@@ -1421,8 +1450,8 @@ let allEmployees = [];
 
 async function loadEmpTable(hotels) {
   const me         = getUser();
-  // Managers can edit/deactivate their own hotel's employees (server enforces scope).
-  const canManage  = me.role === 'admin' || me.role === 'manager';
+  // Managers and supervisors can edit/deactivate their own hotel's employees.
+  const canManage  = me.role === 'admin' || me.role === 'manager' || me.role === 'supervisor';
   const search     = document.getElementById('emp-search').value.toLowerCase();
   const hotelFil   = document.getElementById('emp-hotel-filter').value;
   const roleFil    = document.getElementById('emp-role-filter').value;
@@ -1476,10 +1505,11 @@ async function loadEmpTable(hotels) {
 }
 
 async function openAddEmployee() {
-  const me      = getUser();
-  const isAdmin = me.role === 'admin';
+  const me           = getUser();
+  const isAdmin      = me.role === 'admin';
+  const isSupervisor = me.role === 'supervisor';
   const hotels  = await GET('/api/hotels');
-  // Manager scope: hotel is forced to their own, role choice is restricted.
+  // Manager/supervisor scope: hotel is forced to their own, roles are restricted.
   const myHotel = hotels.find(h => h.id === me.hotelId);
   let positions = [];
   try { positions = (await GET('/api/positions')).positions || []; } catch {}
@@ -1490,8 +1520,10 @@ async function openAddEmployee() {
        <option value="supervisor">Supervisor</option>
        <option value="accounting">Accounting</option>
        <option value="admin">Admin</option>`
-    : `<option value="employee">Employee</option>
-       <option value="supervisor">Supervisor</option>`;
+    : isSupervisor
+      ? `<option value="employee">Employee</option>`
+      : `<option value="employee">Employee</option>
+         <option value="supervisor">Supervisor</option>`;
 
   const hotelField = isAdmin
     ? `<div class="form-group"><label>Hotel / Company</label>

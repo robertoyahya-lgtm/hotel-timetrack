@@ -1479,6 +1479,60 @@ select.form-control {
   .topbar { padding: 0 14px; }
 }
 
+/* ─── SHIFT EDIT MODAL ───────────────────────────────────────────────────── */
+
+.edit-shift-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--gray-600);
+  margin-bottom: 4px;
+}
+.edit-badge {
+  background: var(--amber-lt, #fdf3e3);
+  color: #7a4810;
+  border: 1px solid #f5d09b;
+  border-radius: 20px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Audit history inside edit modal */
+.edit-history {
+  margin-top: 18px;
+  border-top: 1px solid var(--gray-200);
+  padding-top: 14px;
+}
+.edit-history-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--gray-400);
+  margin-bottom: 10px;
+}
+.edit-history-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--gray-100);
+  font-size: 12.5px;
+}
+.edit-history-row:last-child { border-bottom: none; }
+.edit-history-who  { font-weight: 600; color: var(--navy-800); }
+.edit-history-when { color: var(--gray-400); text-align: right; }
+.edit-history-change {
+  grid-column: 1 / -1;
+  color: var(--gray-700);
+  line-height: 1.6;
+}
+.edit-history-change s { color: var(--gray-400); text-decoration: line-through; }
+.edit-history-change strong { color: var(--navy-800); }
+
 /* ─── GEO BADGE — GPS verification status in validate table ────────────── */
 
 .geo-badge {
