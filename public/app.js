@@ -36,6 +36,72 @@ const POST   = (url, b)  => api('POST',   url, b);
 const PUT    = (url, b)  => api('PUT',    url, b);
 const DELETE = url        => api('DELETE', url);
 
+// ─── UI Helpers ───────────────────────────────────────────────────────────────
+
+/** Get 1-2 initials from a full name */
+function initials(name) {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+/** Consistent color per name (deterministic hash) */
+const _AVATAR_PALETTE = [
+  ['#eff6ff','#1a4f8a'], ['#ecfdf3','#027a48'], ['#f4f3ff','#6941c6'],
+  ['#fffaeb','#b54708'], ['#fef3f2','#b42318'], ['#ecfeff','#155e75'],
+  ['#fdf4ff','#7e22ce'], ['#fff7ed','#c2410c'], ['#f0fdf4','#15803d'],
+];
+function _avatarColor(name) {
+  let h = 0;
+  for (let i = 0; i < (name || '').length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return _AVATAR_PALETTE[Math.abs(h) % _AVATAR_PALETTE.length];
+}
+
+/** Render a colored avatar circle with initials */
+function avatarHtml(name, size = 28) {
+  const [bg, fg] = _avatarColor(name || '');
+  return `<span class="avatar" style="width:${size}px;height:${size}px;background:${bg};color:${fg};font-size:${Math.round(size * .39)}px">${initials(name)}</span>`;
+}
+
+/** Animate stat-value numbers from 0 to their target (runs after data renders) */
+function animateCounters() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.stat-value').forEach(el => {
+      const raw = el.textContent.trim();
+      // Only animate plain integers (skip "4h 30m", "12:30", decimals, etc.)
+      if (!raw || !/^\d+$/.test(raw)) return;
+      const target = parseInt(raw, 10);
+      if (target === 0 || target > 9999) return;
+      el.textContent = '0';
+      const t0 = performance.now(), dur = 650;
+      const tick = (now) => {
+        const p = Math.min((now - t0) / dur, 1);
+        el.textContent = Math.round((1 - Math.pow(1 - p, 3)) * target);
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  });
+}
+
+/** Premium empty-state HTML with icon, title, optional subtitle */
+function emptyHtml(icon, title, sub = '') {
+  return `<div class="empty-state">
+    <div class="empty-icon">${icon}</div>
+    <div class="empty-title">${title}</div>
+    ${sub ? `<div class="empty-sub">${sub}</div>` : ''}
+  </div>`;
+}
+const _SVG = {
+  search:   `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="9" cy="9" r="5.5"/><path d="m14 14 3 3"/></svg>`,
+  calendar: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="14" height="13" rx="2"/><path d="M3 8h14M8 3v3M12 3v3"/></svg>`,
+  list:     `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M7 6h9M7 10h9M7 14h5"/><circle cx="4" cy="6" r=".9" fill="currentColor" stroke="none"/><circle cx="4" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="4" cy="14" r=".9" fill="currentColor" stroke="none"/></svg>`,
+  check:    `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="m7 10 2 2 4-4"/></svg>`,
+  users:    `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7.5" cy="7" r="3"/><path d="M2 17c0-3 2.5-5.5 5.5-5.5h1"/><circle cx="14.5" cy="12.5" r="2.5"/><path d="M12 17h5"/></svg>`,
+  clock:    `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l2.5 1.5"/></svg>`,
+};
+
 // ─── Navigation & routing ─────────────────────────────────────────────────────
 
 const NAV_ICONS = {
@@ -121,7 +187,13 @@ function navigate(route) {
     el.classList.toggle('active', el.dataset.route === route));
 
   const body = document.getElementById('page-body');
-  body.innerHTML = '<div class="empty-state text-muted">Loading...</div>';
+
+  // Page transition: remove then re-add class to re-trigger animation
+  body.classList.remove('page-anim');
+  void body.offsetWidth; // force reflow so animation replays
+  body.classList.add('page-anim');
+
+  body.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
   document.getElementById('topbar-actions').innerHTML = '';
 
   const user = getUser();
@@ -139,6 +211,9 @@ function navigate(route) {
     account:     renderAccount,
   };
   if (renders[route]) renders[route](user);
+
+  // Animate stat counters once data has rendered (async renders take ~150ms)
+  setTimeout(animateCounters, 280);
 }
 
 function renderSidebar(pendingCount = 0) {
@@ -900,12 +975,12 @@ function renderOverviewActiveTable() {
   }
 
   bodyEl.innerHTML = rows.length === 0
-    ? `<div class="empty-state text-muted" style="padding:20px">${overviewHotelFilter ? 'Nobody on shift at this property right now.' : 'Nobody currently on shift.'}</div>`
-    : `<div class="table-wrap"><table>
+    ? emptyHtml(_SVG.clock, overviewHotelFilter ? 'No active staff at this property' : 'Nobody currently on shift', 'Active shifts will appear here in real time.')
+    : `<div class="table-wrap"><table class="anim-rows">
         <thead><tr><th>Employee</th><th>Role</th><th>Position</th><th>Hotel / Property</th><th>Sub-unit</th><th>Started</th></tr></thead>
         <tbody>${rows.map(s => `
           <tr>
-            <td class="td-name">${esc(s.userName)}</td>
+            <td><div class="cell-person">${avatarHtml(s.userName)}<div class="cell-person-info"><div class="td-name">${esc(s.userName)}</div></div></div></td>
             <td>${roleBadge(s.userRole || 'employee')}</td>
             <td>${s.position && s.position !== 'Unassigned'
               ? `<span class="badge badge-position">${esc(s.position)}</span>`
@@ -951,7 +1026,7 @@ async function renderShifts(user) {
       <button class="btn btn-secondary" id="s-load">Search</button>
     </div>
     <div class="card" id="shifts-card">
-      <div class="table-wrap" id="shifts-table"><div class="empty-state text-muted">Click Search to load shifts.</div></div>
+      <div class="table-wrap" id="shifts-table">${emptyHtml(_SVG.search, 'Apply filters to load shifts', 'Select a date range and click Search.')}</div>
     </div>`;
 
   document.getElementById('s-load').addEventListener('click', () => loadShiftsTable(user));
@@ -987,10 +1062,10 @@ async function loadShiftsTable(user) {
       <span class="text-muted text-sm">${fmtDurH(totalMins)} total</span>
     </div>`);
 
-    if (shifts.length === 0) { el.innerHTML = '<div class="empty-state text-muted">No shifts found.</div>'; return; }
+    if (shifts.length === 0) { el.innerHTML = emptyHtml(_SVG.list, 'No shifts found', 'Try adjusting the filters or date range.'); return; }
 
     const canEditShifts = user.role === 'admin' || user.role === 'manager' || user.role === 'supervisor';
-    el.innerHTML = `<table>
+    el.innerHTML = `<table class="anim-rows">
       <thead>
         <tr>
           <th>Employee</th>
@@ -1004,7 +1079,7 @@ async function loadShiftsTable(user) {
       <tbody>
         ${shifts.map(s => `
           <tr>
-            <td><div class="td-name">${esc(s.userName)}</div>${s.isCorrection ? '<div class="td-sub">Correction</div>' : ''}</td>
+            <td><div class="cell-person">${avatarHtml(s.userName)}<div class="cell-person-info"><div class="td-name">${esc(s.userName)}</div>${s.isCorrection ? '<div class="td-sub">Correction</div>' : ''}</div></div></td>
             <td>${roleBadge(s.userRole || 'employee')}</td>
             <td>${s.position && s.position !== 'Unassigned'
               ? `<span class="badge badge-position">${esc(s.position)}</span>`
@@ -1160,7 +1235,7 @@ async function renderValidate(user) {
       </div>
     </div>
     <div class="card">
-      <div class="table-wrap" id="val-table"><div class="empty-state text-muted">Click Load to show shifts.</div></div>
+      <div class="table-wrap" id="val-table">${emptyHtml(_SVG.calendar, 'Select a pay period', 'Choose a biweekly period above and click Load.')}</div>
     </div>`;
 
   document.getElementById('val-mode').addEventListener('change', function () {
@@ -1199,9 +1274,9 @@ async function loadValTable(user) {
 
   try {
     valShifts = (await GET('/api/shifts?' + params)).filter(s => s.status !== 'active');
-    if (valShifts.length === 0) { el.innerHTML = '<div class="empty-state text-muted">No shifts in this period.</div>'; return; }
+    if (valShifts.length === 0) { el.innerHTML = emptyHtml(_SVG.check, 'All clear', 'No shifts to validate in this period.'); return; }
 
-    el.innerHTML = `<table>
+    el.innerHTML = `<table class="anim-rows">
       <thead>
         <tr>
           <th class="th-check"><input type="checkbox" id="chk-all" title="Select all"></th>
@@ -1214,10 +1289,7 @@ async function loadValTable(user) {
         ${valShifts.map(s => `
           <tr class="${geoBadgeClass(s) === 'geo-warn' ? 'val-row-geo-warn' : ''}">
             <td>${s.status === 'completed' ? `<input type="checkbox" class="val-chk" data-id="${s.id}">` : ''}</td>
-            <td>
-              <div class="td-name">${esc(s.userName)}</div>
-              ${s.position ? `<div class="td-sub">${esc(s.position)}</div>` : ''}
-            </td>
+            <td><div class="cell-person">${avatarHtml(s.userName)}<div class="cell-person-info"><div class="td-name">${esc(s.userName)}</div>${s.position ? `<div class="td-sub">${esc(s.position)}</div>` : ''}</div></div></td>
             ${user.role === 'admin' ? `<td>${esc(s.hotelName)}${s.subUnit ? `<div class="td-sub">${esc(s.subUnit)}</div>` : ''}</td>` : ''}
             <td>${fmtDate(s.startTime)}</td>
             <td>${fmtTime(s.startTime)}</td>
@@ -1298,9 +1370,9 @@ async function loadCorrTable(user) {
 
   try {
     let list = await GET('/api/corrections' + (status ? `?status=${status}` : ''));
-    if (list.length === 0) { el.innerHTML = '<div class="empty-state text-muted">No correction requests.</div>'; return; }
+    if (list.length === 0) { el.innerHTML = emptyHtml(_SVG.check, 'No correction requests', 'Nothing pending — all corrections are up to date.'); return; }
 
-    el.innerHTML = `<table>
+    el.innerHTML = `<table class="anim-rows">
       <thead>
         <tr>
           <th>Employee</th>
@@ -1311,7 +1383,7 @@ async function loadCorrTable(user) {
       <tbody>
         ${list.map(c => `
           <tr>
-            <td class="td-name">${esc(c.userName)}</td>
+            <td><div class="cell-person">${avatarHtml(c.userName)}<div class="cell-person-info"><div class="td-name">${esc(c.userName)}</div></div></div></td>
             ${user.role === 'admin' ? `<td>${esc(c.hotelName)}</td>` : ''}
             <td>${esc(c.date)}</td>
             <td>${fmtTime(c.requestedStart)} — ${fmtTime(c.requestedEnd)}</td>
@@ -1472,14 +1544,14 @@ async function loadEmpTable(hotels) {
 
     if (users.length === 0) { el.innerHTML = '<div class="empty-state text-muted">No employees found.</div>'; return; }
 
-    el.innerHTML = `<table>
+    el.innerHTML = `<table class="anim-rows">
       <thead>
         <tr><th>Name</th><th>Email</th><th>Role</th><th>Position</th><th>Hotel / Group</th><th>Property / Sub-unit</th><th>Status</th>${canManage ? '<th>Actions</th>' : ''}</tr>
       </thead>
       <tbody>
         ${users.map(u => `
           <tr>
-            <td class="td-name">${esc(u.name)}</td>
+            <td><div class="cell-person">${avatarHtml(u.name)}<div class="cell-person-info"><div class="td-name">${esc(u.name)}</div></div></div></td>
             <td class="text-muted">${esc(u.email)}</td>
             <td>${roleBadge(u.role)}</td>
             <td>${u.position && u.position !== 'Unassigned'
