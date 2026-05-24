@@ -1,0 +1,25 @@
+[
+  {
+    "id": "218d7f78-dc0e-4aa5-b906-24b66593d6b6",
+    "userId": "29f22d0a-e756-43f9-8cfb-5d4206d82642",
+    "userName": "Bruni test",
+    "hotelId": "ae3dac83-9cd9-469c-9236-4641cffb1736",
+    "hotelName": "Les Chambres Petit Prince",
+    "subUnit": "Mystral",
+    "startTime": "2026-04-26T22:40:36.323Z",
+    "endTime": "2026-04-26T23:16:48.334Z",
+    "totalMinutes": 36,
+    "status": "completed",
+    "validated": false,
+    "validatedBy": null,
+    "validatedByName": null,
+    "validatedAt": null,
+    "isCorrection": false,
+    "correctionId": null,
+    "notes": "",
+    "editedBy": null,
+    "editedByName": null,
+    "editedAt": null,
+    "createdAt": "2026-04-26T22:40:36.323Z"
+  }
+]

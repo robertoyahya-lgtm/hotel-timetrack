@@ -1,0 +1,65 @@
+[
+  {
+    "id": "9ad602ff-2b0e-4d6f-ace1-b34889c06105",
+    "shortName": "64 Prince",
+    "fullName": "64 Rue Prince",
+    "address": "64 Rue Prince, Montréal, QC H3C 2M8",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "active": true
+  },
+  {
+    "id": "0bbb5f9e-331e-485c-a167-d192ab839819",
+    "shortName": "5475 Victoria",
+    "fullName": "5475 Avenue Victoria",
+    "address": "5475 Avenue Victoria, Montréal, QC H3W 2P7",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "active": true
+  },
+  {
+    "id": "f653c66e-0d8d-456a-b176-241b5c458c88",
+    "shortName": "5826 Parc",
+    "fullName": "5826 Avenue du Parc",
+    "address": "5826 Avenue du Parc, Montréal, QC H2V 4H3",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "active": true
+  },
+  {
+    "id": "0981d5f5-6f65-435e-b3a1-adb98c39226f",
+    "shortName": "4152 SD",
+    "fullName": "4152 Rue Saint-Denis",
+    "address": "4152 Rue Saint-Denis, Montréal, QC H2W 2M5",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "active": true
+  },
+  {
+    "id": "c47919d1-eba9-466b-84be-c181016351cf",
+    "shortName": "4501 Drolet",
+    "fullName": "4501 Rue Drolet (Le Cove)",
+    "address": "4501 Rue Drolet, Montréal, QC H2T 1R1",
+    "companyId": "f685ba87-5c15-4dfd-9af2-392b2c86cec8",
+    "companyName": "LP-4501 Drolet",
+    "active": true
+  },
+  {
+    "id": "60bafc47-7396-4e89-bc77-a1584b448881",
+    "shortName": "901 Sherbrooke",
+    "fullName": "901 Sherbrooke E (Maison de Paris)",
+    "address": "901 Rue Sherbrooke E, Montréal, QC H2L 1L3",
+    "companyId": "b9ddf6d3-d98c-4db7-a810-eec005ad3785",
+    "companyName": "LP-901 Sherbrooke E",
+    "active": true
+  },
+  {
+    "id": "7bb6de0d-71db-40db-ad8b-00f10134cbfc",
+    "shortName": "411 Récollets",
+    "fullName": "411 Rue des Récollets (The Alexander)",
+    "address": "411 Rue des Récollets, Montréal, QC H2Y 2L2",
+    "companyId": "a13c54ca-6cdd-400f-a302-270230705f01",
+    "companyName": "Hotel 411 Récollets S.E.C",
+    "active": true
+  }
+]

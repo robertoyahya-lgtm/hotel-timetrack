@@ -1,0 +1,33 @@
+[
+  {
+    "id": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "name": "Les Chambres du Petit Prince S.E.C",
+    "properties": [
+      "64 Prince",
+      "5475 Victoria",
+      "5826 Parc",
+      "4152 SD"
+    ]
+  },
+  {
+    "id": "f685ba87-5c15-4dfd-9af2-392b2c86cec8",
+    "name": "LP-4501 Drolet",
+    "properties": [
+      "4501 Drolet"
+    ]
+  },
+  {
+    "id": "b9ddf6d3-d98c-4db7-a810-eec005ad3785",
+    "name": "LP-901 Sherbrooke E",
+    "properties": [
+      "901 Sherbrooke"
+    ]
+  },
+  {
+    "id": "a13c54ca-6cdd-400f-a302-270230705f01",
+    "name": "Hotel 411 Récollets S.E.C",
+    "properties": [
+      "411 Récollets"
+    ]
+  }
+]

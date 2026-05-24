@@ -1,0 +1,86 @@
+[
+  {
+    "id": "budget-60bafc47-cons",
+    "propertyId": "60bafc47-7396-4e89-bc77-a1584b448881",
+    "propertyName": "901 Sherbrooke",
+    "companyId": "b9ddf6d3-d98c-4db7-a810-eec005ad3785",
+    "companyName": "LP-901 Sherbrooke E",
+    "category": "Consommables & Nettoyage",
+    "year": 2026,
+    "month": 5,
+    "monthlyLimit": 1000,
+    "createdAt": "2026-05-24T15:19:28.046Z"
+  },
+  {
+    "id": "budget-7bb6de0d-cons",
+    "propertyId": "7bb6de0d-71db-40db-ad8b-00f10134cbfc",
+    "propertyName": "411 Récollets",
+    "companyId": "a13c54ca-6cdd-400f-a302-270230705f01",
+    "companyName": "Hotel 411 Récollets S.E.C",
+    "category": "Consommables & Nettoyage",
+    "year": 2026,
+    "month": 5,
+    "monthlyLimit": 1000,
+    "createdAt": "2026-05-24T15:19:28.049Z"
+  },
+  {
+    "id": "budget-c47919d1-cons",
+    "propertyId": "c47919d1-eba9-466b-84be-c181016351cf",
+    "propertyName": "4501 Drolet",
+    "companyId": "f685ba87-5c15-4dfd-9af2-392b2c86cec8",
+    "companyName": "LP-4501 Drolet",
+    "category": "Consommables & Nettoyage",
+    "year": 2026,
+    "month": 5,
+    "monthlyLimit": 1000,
+    "createdAt": "2026-05-24T15:19:28.049Z"
+  },
+  {
+    "id": "budget-9ad602ff-cons",
+    "propertyId": "9ad602ff-2b0e-4d6f-ace1-b34889c06105",
+    "propertyName": "64 Prince",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "category": "Consommables & Nettoyage",
+    "year": 2026,
+    "month": 5,
+    "monthlyLimit": 1000,
+    "createdAt": "2026-05-24T15:19:28.049Z"
+  },
+  {
+    "id": "budget-0bbb5f9e-cons",
+    "propertyId": "0bbb5f9e-331e-485c-a167-d192ab839819",
+    "propertyName": "5475 Victoria",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "category": "Consommables & Nettoyage",
+    "year": 2026,
+    "month": 5,
+    "monthlyLimit": 1000,
+    "createdAt": "2026-05-24T15:19:28.049Z"
+  },
+  {
+    "id": "budget-f653c66e-cons",
+    "propertyId": "f653c66e-0d8d-456a-b176-241b5c458c88",
+    "propertyName": "5826 Parc",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "category": "Consommables & Nettoyage",
+    "year": 2026,
+    "month": 5,
+    "monthlyLimit": 1000,
+    "createdAt": "2026-05-24T15:19:28.049Z"
+  },
+  {
+    "id": "budget-0981d5f5-cons",
+    "propertyId": "0981d5f5-6f65-435e-b3a1-adb98c39226f",
+    "propertyName": "4152 SD",
+    "companyId": "2a9dde2d-040a-48e1-a562-f92560df22f7",
+    "companyName": "Les Chambres du Petit Prince S.E.C",
+    "category": "Consommables & Nettoyage",
+    "year": 2026,
+    "month": 5,
+    "monthlyLimit": 1000,
+    "createdAt": "2026-05-24T15:19:28.049Z"
+  }
+]
