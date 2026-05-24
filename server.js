@@ -5,6 +5,7 @@ const path     = require('path');
 const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const multer = require('multer');
 
 const app    = express();
 const PORT   = process.env.PORT || 3001;
@@ -28,6 +29,26 @@ app.set('trust proxy', 1);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+const RECEIPTS_DIR = path.join(DATA, 'receipts');
+if (!fs.existsSync(RECEIPTS_DIR)) fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
+
+const receiptStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, RECEIPTS_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, uuidv4() + ext);
+  }
+});
+const upload = multer({
+  storage: receiptStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['.jpg', '.jpeg', '.png', '.pdf', '.webp', '.heic'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, allowed.includes(ext));
+  }
+});
 
 // ─── DB ──────────────────────────────────────────────────────────────────────
 
@@ -1323,6 +1344,691 @@ async function bootstrap() {
     }
   }
 }
+
+// ─── FINANCE MODULE ─────────────────────────────────────────────────────────
+
+app.get('/api/receipts/:filename', auth('admin'), (req, res) => {
+  const fp = path.join(RECEIPTS_DIR, path.basename(req.params.filename));
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'File not found' });
+  res.sendFile(fp);
+});
+
+// ── Properties & Companies ──
+
+app.get('/api/properties', auth('admin'), (_req, res) => {
+  res.json(db.read('properties.json'));
+});
+
+app.get('/api/companies', auth('admin'), (_req, res) => {
+  res.json(db.read('companies.json'));
+});
+
+// ── Expense Categories ──
+
+app.get('/api/expense-categories', auth('admin'), (_req, res) => {
+  res.json(db.read('categories.json'));
+});
+
+app.post('/api/expense-categories', auth('admin'), (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'Name required' });
+  const cats = db.read('categories.json');
+  const trimmed = name.trim();
+  if (cats.some(c => c.toLowerCase() === trimmed.toLowerCase())) return res.status(409).json({ error: 'Category already exists' });
+  cats.push(trimmed);
+  cats.sort((a, b) => a.localeCompare(b, 'fr'));
+  db.write('categories.json', cats);
+  res.json(cats);
+});
+
+app.delete('/api/expense-categories/:name', auth('admin'), (req, res) => {
+  const cats = db.read('categories.json');
+  const target = decodeURIComponent(req.params.name);
+  const idx = cats.findIndex(c => c === target);
+  if (idx === -1) return res.status(404).json({ error: 'Category not found' });
+  const expenses = db.read('expenses.json');
+  const inUse = expenses.some(e => e.category === target);
+  if (inUse) return res.status(409).json({ error: 'Category in use — reassign expenses first' });
+  cats.splice(idx, 1);
+  db.write('categories.json', cats);
+  res.json(cats);
+});
+
+// ── Expenses CRUD ──
+
+app.get('/api/expenses', auth('admin'), (req, res) => {
+  let expenses = db.read('expenses.json');
+  const { from, to, propertyId, companyId, category, search, paid } = req.query;
+  if (from) expenses = expenses.filter(e => e.date >= from);
+  if (to) expenses = expenses.filter(e => e.date <= to);
+  if (propertyId) expenses = expenses.filter(e => e.propertyId === propertyId);
+  if (companyId) expenses = expenses.filter(e => e.companyId === companyId);
+  if (category) expenses = expenses.filter(e => e.category === category);
+  if (paid === 'true') expenses = expenses.filter(e => e.paid);
+  if (paid === 'false') expenses = expenses.filter(e => !e.paid);
+  if (search) {
+    const q = search.toLowerCase();
+    expenses = expenses.filter(e =>
+      (e.description || '').toLowerCase().includes(q) ||
+      (e.supplier || '').toLowerCase().includes(q) ||
+      (e.invoiceRef || '').toLowerCase().includes(q) ||
+      (e.propertyName || '').toLowerCase().includes(q)
+    );
+  }
+  expenses.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  res.json(expenses);
+});
+
+app.post('/api/expenses', auth('admin'), (req, res) => {
+  const { propertyId, category, amount, description, supplier, date, invoiceRef, paid } = req.body;
+  if (!propertyId || !category || amount === undefined || !date) {
+    return res.status(400).json({ error: 'propertyId, category, amount and date are required' });
+  }
+  const properties = db.read('properties.json');
+  const prop = properties.find(p => p.id === propertyId);
+  if (!prop) return res.status(404).json({ error: 'Property not found' });
+
+  const expenses = db.read('expenses.json');
+  const expense = {
+    id: uuidv4(),
+    propertyId: prop.id,
+    propertyName: prop.shortName,
+    companyId: prop.companyId,
+    companyName: prop.companyName,
+    category,
+    amount: Math.round(parseFloat(amount) * 100) / 100,
+    description: description || '',
+    supplier: supplier || '',
+    invoiceRef: invoiceRef || '',
+    date,
+    status: 'Reçu',
+    paid: paid !== false,
+    receiptPath: null,
+    receiptOriginalName: null,
+    ocrData: null,
+    createdBy: req.user.id,
+    createdByName: req.user.name,
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+    source: 'manual'
+  };
+  expenses.push(expense);
+  db.write('expenses.json', expenses);
+  res.status(201).json(expense);
+});
+
+app.put('/api/expenses/:id', auth('admin'), (req, res) => {
+  const expenses = db.read('expenses.json');
+  const idx = expenses.findIndex(e => e.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Expense not found' });
+
+  const { propertyId, category, amount, description, supplier, date, invoiceRef, paid } = req.body;
+
+  if (propertyId && propertyId !== expenses[idx].propertyId) {
+    const properties = db.read('properties.json');
+    const prop = properties.find(p => p.id === propertyId);
+    if (!prop) return res.status(404).json({ error: 'Property not found' });
+    expenses[idx].propertyId = prop.id;
+    expenses[idx].propertyName = prop.shortName;
+    expenses[idx].companyId = prop.companyId;
+    expenses[idx].companyName = prop.companyName;
+  }
+  if (category !== undefined) expenses[idx].category = category;
+  if (amount !== undefined) expenses[idx].amount = Math.round(parseFloat(amount) * 100) / 100;
+  if (description !== undefined) expenses[idx].description = description;
+  if (supplier !== undefined) expenses[idx].supplier = supplier;
+  if (date !== undefined) expenses[idx].date = date;
+  if (invoiceRef !== undefined) expenses[idx].invoiceRef = invoiceRef;
+  if (paid !== undefined) expenses[idx].paid = paid;
+  expenses[idx].updatedAt = new Date().toISOString();
+
+  db.write('expenses.json', expenses);
+  res.json(expenses[idx]);
+});
+
+app.delete('/api/expenses/:id', auth('admin'), (req, res) => {
+  const expenses = db.read('expenses.json');
+  const idx = expenses.findIndex(e => e.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Expense not found' });
+  if (expenses[idx].receiptPath) {
+    const fp = path.join(RECEIPTS_DIR, expenses[idx].receiptPath);
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  }
+  expenses.splice(idx, 1);
+  db.write('expenses.json', expenses);
+  res.json({ ok: true });
+});
+
+// ── Receipt upload ──
+
+app.post('/api/expenses/:id/receipt', auth('admin'), upload.single('receipt'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const expenses = db.read('expenses.json');
+  const idx = expenses.findIndex(e => e.id === req.params.id);
+  if (idx === -1) {
+    fs.unlinkSync(req.file.path);
+    return res.status(404).json({ error: 'Expense not found' });
+  }
+  if (expenses[idx].receiptPath) {
+    const old = path.join(RECEIPTS_DIR, expenses[idx].receiptPath);
+    if (fs.existsSync(old)) fs.unlinkSync(old);
+  }
+  expenses[idx].receiptPath = req.file.filename;
+  expenses[idx].receiptOriginalName = req.file.originalname;
+  expenses[idx].updatedAt = new Date().toISOString();
+  db.write('expenses.json', expenses);
+  res.json(expenses[idx]);
+});
+
+app.post('/api/expenses/with-receipt', auth('admin'), upload.single('receipt'), (req, res) => {
+  const { propertyId, category, amount, description, supplier, date, invoiceRef, paid } = req.body;
+  if (!propertyId || !category || amount === undefined || !date) {
+    if (req.file) fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: 'propertyId, category, amount and date are required' });
+  }
+  const properties = db.read('properties.json');
+  const prop = properties.find(p => p.id === propertyId);
+  if (!prop) {
+    if (req.file) fs.unlinkSync(req.file.path);
+    return res.status(404).json({ error: 'Property not found' });
+  }
+  const expenses = db.read('expenses.json');
+  const expense = {
+    id: uuidv4(),
+    propertyId: prop.id,
+    propertyName: prop.shortName,
+    companyId: prop.companyId,
+    companyName: prop.companyName,
+    category,
+    amount: Math.round(parseFloat(amount) * 100) / 100,
+    description: description || '',
+    supplier: supplier || '',
+    invoiceRef: invoiceRef || '',
+    date,
+    status: 'Reçu',
+    paid: paid !== 'false',
+    receiptPath: req.file ? req.file.filename : null,
+    receiptOriginalName: req.file ? req.file.originalname : null,
+    ocrData: null,
+    createdBy: req.user.id,
+    createdByName: req.user.name,
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+    source: 'receipt_upload'
+  };
+  expenses.push(expense);
+  db.write('expenses.json', expenses);
+  res.status(201).json(expense);
+});
+
+// ── Finance Stats ──
+
+function round2(n) { return Math.round(n * 100) / 100; }
+function groupBy(arr, keyFn) {
+  const m = {};
+  arr.forEach(e => { const k = keyFn(e); if (!m[k]) m[k] = []; m[k].push(e); });
+  return m;
+}
+
+app.get('/api/expenses/stats', auth('admin'), (req, res) => {
+  const expenses = db.read('expenses.json');
+  const budgets = db.read('budgets.json');
+  const properties = db.read('properties.json');
+  const { year, month } = req.query;
+  const y = parseInt(year) || new Date().getFullYear();
+  const m = parseInt(month) || (new Date().getMonth() + 1);
+  const mStr = `${y}-${String(m).padStart(2, '0')}`;
+  const prevM = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+
+  const thisMonth = expenses.filter(e => e.date.startsWith(mStr));
+  const prevMonth = expenses.filter(e => e.date.startsWith(prevM));
+  const thisYear = expenses.filter(e => e.date.startsWith(String(y)));
+
+  const totalThisMonth = thisMonth.reduce((s, e) => s + e.amount, 0);
+  const totalPrevMonth = prevMonth.reduce((s, e) => s + e.amount, 0);
+  const totalThisYear = thisYear.reduce((s, e) => s + e.amount, 0);
+  const totalAllTime = expenses.reduce((s, e) => s + e.amount, 0);
+
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const today = new Date();
+  const dayOfMonth = (today.getFullYear() === y && today.getMonth() + 1 === m) ? today.getDate() : daysInMonth;
+
+  // Use thisMonth data if available, otherwise fall back to thisYear for breakdowns
+  const breakdownSource = thisMonth.length > 0 ? thisMonth : thisYear;
+  const breakdownLabel = thisMonth.length > 0 ? 'month' : 'year';
+
+  // By property
+  const byProperty = {};
+  breakdownSource.forEach(e => {
+    if (!byProperty[e.propertyId]) byProperty[e.propertyId] = { name: e.propertyName, companyName: e.companyName, total: 0, count: 0 };
+    byProperty[e.propertyId].total += e.amount;
+    byProperty[e.propertyId].count++;
+  });
+
+  // By company
+  const byCompany = {};
+  breakdownSource.forEach(e => {
+    if (!byCompany[e.companyId]) byCompany[e.companyId] = { name: e.companyName, total: 0, count: 0 };
+    byCompany[e.companyId].total += e.amount;
+    byCompany[e.companyId].count++;
+  });
+
+  // By category
+  const byCategory = {};
+  breakdownSource.forEach(e => {
+    if (!byCategory[e.category]) byCategory[e.category] = { total: 0, count: 0 };
+    byCategory[e.category].total += e.amount;
+    byCategory[e.category].count++;
+  });
+
+  // Monthly trend — always Jan to Dec for selected year
+  const monthlyTrend = [];
+  for (let mi = 1; mi <= 12; mi++) {
+    const ms = `${y}-${String(mi).padStart(2, '0')}`;
+    const mExpenses = expenses.filter(e => e.date.startsWith(ms));
+    const total = mExpenses.reduce((s, e) => s + e.amount, 0);
+    const count = mExpenses.length;
+    monthlyTrend.push({ month: ms, total, count });
+  }
+
+  // Budget usage
+  const monthBudgets = budgets.filter(b => b.year === y && b.month === m);
+  const budgetAlerts = [];
+  const budgetProgress = [];
+  monthBudgets.forEach(b => {
+    const spent = thisMonth
+      .filter(e => e.propertyId === b.propertyId && e.category === b.category)
+      .reduce((s, e) => s + e.amount, 0);
+    const pct = b.monthlyLimit > 0 ? (spent / b.monthlyLimit) * 100 : 0;
+    budgetProgress.push({
+      propertyId: b.propertyId,
+      propertyName: b.propertyName,
+      companyName: b.companyName,
+      category: b.category,
+      budget: round2(b.monthlyLimit),
+      spent: round2(spent),
+      remaining: round2(b.monthlyLimit - spent),
+      pct: Math.round(pct)
+    });
+    if (pct >= 80) {
+      budgetAlerts.push({ propertyName: b.propertyName, category: b.category, limit: b.monthlyLimit, spent, pct: Math.round(pct) });
+    }
+  });
+
+  const totalBudget = monthBudgets.reduce((s, b) => s + b.monthlyLimit, 0);
+  const totalBudgetSpent = budgetProgress.reduce((s, b) => s + b.spent, 0);
+  const budgetUsedPct = totalBudget > 0 ? Math.round((totalBudgetSpent / totalBudget) * 100) : null;
+
+  // Budget progress grouped by property (monthly)
+  const budgetByProperty = {};
+  budgetProgress.forEach(bp => {
+    if (!budgetByProperty[bp.propertyId]) budgetByProperty[bp.propertyId] = { name: bp.propertyName, budget: 0, spent: 0 };
+    budgetByProperty[bp.propertyId].budget += bp.budget;
+    budgetByProperty[bp.propertyId].spent += bp.spent;
+  });
+  const budgetByPropertyArr = Object.values(budgetByProperty).map(bp => ({
+    ...bp, remaining: round2(bp.budget - bp.spent), pct: bp.budget > 0 ? Math.round((bp.spent / bp.budget) * 100) : 0
+  }));
+
+  // Annual budget summary per property (all budgets × months they cover)
+  const annualBudgetByProperty = {};
+  const allBudgetsForYear = budgets.filter(b => b.year === y);
+  allBudgetsForYear.forEach(b => {
+    if (!annualBudgetByProperty[b.propertyId]) {
+      annualBudgetByProperty[b.propertyId] = { name: b.propertyName, companyName: b.companyName, annualBudget: 0, categories: [] };
+    }
+    annualBudgetByProperty[b.propertyId].annualBudget += b.monthlyLimit * 12;
+    annualBudgetByProperty[b.propertyId].categories.push(b.category);
+  });
+  // Add actual spending per property for the year
+  const annualBudgetSummary = Object.entries(annualBudgetByProperty).map(([propId, bp]) => {
+    const propExpenses = thisYear.filter(e => e.propertyId === propId);
+    const spent = propExpenses.reduce((s, e) => s + e.amount, 0);
+    const count = propExpenses.length;
+    return {
+      propertyId: propId,
+      name: bp.name,
+      companyName: bp.companyName,
+      annualBudget: round2(bp.annualBudget),
+      spent: round2(spent),
+      remaining: round2(bp.annualBudget - spent),
+      pct: bp.annualBudget > 0 ? Math.round((spent / bp.annualBudget) * 100) : 0,
+      count,
+      categories: [...new Set(bp.categories)]
+    };
+  }).sort((a, b) => b.pct - a.pct);
+
+  const totalAnnualBudget = annualBudgetSummary.reduce((s, p) => s + p.annualBudget, 0);
+  const totalAnnualBudgetSpent = annualBudgetSummary.reduce((s, p) => s + p.spent, 0);
+  const annualBudgetPct = totalAnnualBudget > 0 ? Math.round((totalAnnualBudgetSpent / totalAnnualBudget) * 100) : null;
+
+  // Rankings (annual)
+  const rankProp = {};
+  thisYear.forEach(e => {
+    if (!rankProp[e.propertyId]) rankProp[e.propertyId] = { name: e.propertyName, companyName: e.companyName, total: 0, count: 0 };
+    rankProp[e.propertyId].total += e.amount;
+    rankProp[e.propertyId].count++;
+  });
+  const rankCat = {};
+  thisYear.forEach(e => {
+    if (!rankCat[e.category]) rankCat[e.category] = { total: 0, count: 0 };
+    rankCat[e.category].total += e.amount;
+    rankCat[e.category].count++;
+  });
+  const rankSupplier = {};
+  thisYear.forEach(e => {
+    const s = (e.supplier || '').trim();
+    if (!s) return;
+    const key = s.toLowerCase();
+    if (!rankSupplier[key]) rankSupplier[key] = { name: s, total: 0, count: 0 };
+    rankSupplier[key].total += e.amount;
+    rankSupplier[key].count++;
+  });
+
+  // Forecasting
+  const monthsWithData = monthlyTrend.filter(t => t.total > 0);
+  const recentMonths = monthsWithData.slice(-3);
+  const avgMonthlySpend = monthsWithData.length > 0 ? monthsWithData.reduce((s, t) => s + t.total, 0) / monthsWithData.length : 0;
+  const recentAvg = recentMonths.length > 0 ? recentMonths.reduce((s, t) => s + t.total, 0) / recentMonths.length : 0;
+
+  const daysPassed = dayOfMonth;
+  const estimatedMonthEnd = daysPassed > 0 && totalThisMonth > 0
+    ? round2((totalThisMonth / daysPassed) * daysInMonth)
+    : round2(recentAvg);
+
+  const monthsPassed = thisYear.length > 0
+    ? new Set(thisYear.map(e => e.date.slice(0, 7))).size
+    : m;
+  const estimatedYearEnd = monthsPassed > 0
+    ? round2((totalThisYear / monthsPassed) * 12)
+    : round2(avgMonthlySpend * 12);
+
+  let trendDirection = 'stable';
+  if (recentMonths.length >= 2) {
+    const first = recentMonths[0].total;
+    const last = recentMonths[recentMonths.length - 1].total;
+    if (last > first * 1.15) trendDirection = 'up';
+    else if (last < first * 0.85) trendDirection = 'down';
+  }
+
+  // Categories at risk (spending accelerating)
+  const categoriesAtRisk = [];
+  Object.entries(rankCat).forEach(([cat, v]) => {
+    const monthBudget = monthBudgets.find(b => b.category === cat);
+    if (monthBudget) {
+      const monthlyAvgCat = v.total / (monthsPassed || 1);
+      if (monthlyAvgCat > monthBudget.monthlyLimit * 0.8) {
+        categoriesAtRisk.push({ category: cat, avgMonthly: round2(monthlyAvgCat), budget: monthBudget.monthlyLimit });
+      }
+    }
+  });
+
+  // Recent expenses (last 10 across all time if current month empty)
+  const recentSource = thisMonth.length > 0 ? thisMonth : expenses;
+  const recentExpenses = [...recentSource].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
+
+  res.json({
+    period: { year: y, month: m },
+    breakdownScope: breakdownLabel,
+    totalThisMonth: round2(totalThisMonth),
+    totalPrevMonth: round2(totalPrevMonth),
+    totalThisYear: round2(totalThisYear),
+    totalAllTime: round2(totalAllTime),
+    totalExpenses: expenses.length,
+    expenseCount: thisMonth.length,
+    avgPerDay: round2(daysPassed > 0 ? totalThisMonth / daysPassed : 0),
+    monthOverMonth: totalPrevMonth > 0 ? Math.round(((totalThisMonth - totalPrevMonth) / totalPrevMonth) * 100) : null,
+    budgetUsedPct,
+    totalBudget: round2(totalBudget),
+    budgetAlerts,
+    budgetProgress,
+    budgetByProperty: budgetByPropertyArr,
+    annualBudgetSummary,
+    totalAnnualBudget: round2(totalAnnualBudget),
+    annualBudgetPct,
+    byProperty: Object.entries(byProperty).map(([id, v]) => ({ id, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+    byCompany: Object.entries(byCompany).map(([id, v]) => ({ id, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+    byCategory: Object.entries(byCategory).map(([k, v]) => ({ category: k, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+    rankings: {
+      topProperties: Object.entries(rankProp).map(([id, v]) => ({ id, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+      topCategories: Object.entries(rankCat).map(([k, v]) => ({ category: k, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+      topSuppliers: Object.entries(rankSupplier).map(([, v]) => ({ ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total).slice(0, 15)
+    },
+    monthlyTrend,
+    forecast: {
+      estimatedMonthEnd,
+      estimatedYearEnd,
+      avgMonthlySpend: round2(avgMonthlySpend),
+      trendDirection,
+      categoriesAtRisk,
+      budgetVsProjection: totalAnnualBudget > 0 ? {
+        annualBudget: round2(totalAnnualBudget),
+        projected: round2(estimatedYearEnd),
+        pct: Math.round((estimatedYearEnd / totalAnnualBudget) * 100),
+        overBudget: estimatedYearEnd > totalAnnualBudget
+      } : null
+    },
+    recentExpenses
+  });
+});
+
+// Drill-down for a specific month (clicked from trend chart)
+app.get('/api/expenses/month-detail', auth('admin'), (req, res) => {
+  const expenses = db.read('expenses.json');
+  const { month } = req.query;
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: 'month param required (YYYY-MM)' });
+
+  const mExpenses = expenses.filter(e => e.date.startsWith(month));
+  const total = mExpenses.reduce((s, e) => s + e.amount, 0);
+
+  const byProperty = {};
+  mExpenses.forEach(e => {
+    if (!byProperty[e.propertyId]) byProperty[e.propertyId] = { name: e.propertyName, companyName: e.companyName, total: 0, count: 0 };
+    byProperty[e.propertyId].total += e.amount;
+    byProperty[e.propertyId].count++;
+  });
+
+  const byCategory = {};
+  mExpenses.forEach(e => {
+    if (!byCategory[e.category]) byCategory[e.category] = { total: 0, count: 0 };
+    byCategory[e.category].total += e.amount;
+    byCategory[e.category].count++;
+  });
+
+  const bySupplier = {};
+  mExpenses.forEach(e => {
+    const s = (e.supplier || '').trim();
+    if (!s) return;
+    const key = s.toLowerCase();
+    if (!bySupplier[key]) bySupplier[key] = { name: s, total: 0, count: 0 };
+    bySupplier[key].total += e.amount;
+    bySupplier[key].count++;
+  });
+
+  res.json({
+    month,
+    total: round2(total),
+    count: mExpenses.length,
+    byProperty: Object.entries(byProperty).map(([id, v]) => ({ id, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+    byCategory: Object.entries(byCategory).map(([k, v]) => ({ category: k, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+    bySupplier: Object.entries(bySupplier).map(([, v]) => ({ ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total).slice(0, 10),
+    expenses: mExpenses.sort((a, b) => b.date.localeCompare(a.date))
+  });
+});
+
+app.get('/api/expenses/property-detail', auth('admin'), (req, res) => {
+  const expenses = db.read('expenses.json');
+  const { propertyId, year } = req.query;
+  if (!propertyId) return res.status(400).json({ error: 'propertyId param required' });
+  const y = parseInt(year) || new Date().getFullYear();
+
+  const propExpenses = expenses.filter(e => e.propertyId === propertyId && e.date.startsWith(String(y)));
+  const total = propExpenses.reduce((s, e) => s + e.amount, 0);
+
+  const byCategory = {};
+  propExpenses.forEach(e => {
+    if (!byCategory[e.category]) byCategory[e.category] = { total: 0, count: 0 };
+    byCategory[e.category].total += e.amount;
+    byCategory[e.category].count++;
+  });
+
+  const byMonth = {};
+  propExpenses.forEach(e => {
+    const m = e.date.substring(0, 7);
+    if (!byMonth[m]) byMonth[m] = { total: 0, count: 0 };
+    byMonth[m].total += e.amount;
+    byMonth[m].count++;
+  });
+
+  const bySupplier = {};
+  propExpenses.forEach(e => {
+    const s = (e.supplier || '').trim();
+    if (!s) return;
+    const key = s.toLowerCase();
+    if (!bySupplier[key]) bySupplier[key] = { name: s, total: 0, count: 0 };
+    bySupplier[key].total += e.amount;
+    bySupplier[key].count++;
+  });
+
+  res.json({
+    propertyId, year: y,
+    total: round2(total),
+    count: propExpenses.length,
+    byCategory: Object.entries(byCategory).map(([k, v]) => ({ category: k, ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total),
+    byMonth: Object.entries(byMonth).map(([m, v]) => ({ month: m, ...v, total: round2(v.total) })).sort((a, b) => a.month.localeCompare(b.month)),
+    bySupplier: Object.entries(bySupplier).map(([, v]) => ({ ...v, total: round2(v.total) })).sort((a, b) => b.total - a.total).slice(0, 10),
+    expenses: propExpenses.sort((a, b) => b.date.localeCompare(a.date))
+  });
+});
+
+// ── Budgets ──
+
+app.get('/api/budgets', auth('admin'), (req, res) => {
+  let budgets = db.read('budgets.json');
+  const { year, month, propertyId } = req.query;
+  if (year) budgets = budgets.filter(b => b.year === parseInt(year));
+  if (month) budgets = budgets.filter(b => b.month === parseInt(month));
+  if (propertyId) budgets = budgets.filter(b => b.propertyId === propertyId);
+  res.json(budgets);
+});
+
+app.post('/api/budgets', auth('admin'), (req, res) => {
+  const { propertyId, category, monthlyLimit, year, month } = req.body;
+  if (!propertyId || !category || monthlyLimit === undefined || !year || !month) {
+    return res.status(400).json({ error: 'propertyId, category, monthlyLimit, year and month are required' });
+  }
+  const properties = db.read('properties.json');
+  const prop = properties.find(p => p.id === propertyId);
+  if (!prop) return res.status(404).json({ error: 'Property not found' });
+
+  const budgets = db.read('budgets.json');
+  const existing = budgets.findIndex(b => b.propertyId === propertyId && b.category === category && b.year === year && b.month === month);
+  if (existing !== -1) {
+    budgets[existing].monthlyLimit = parseFloat(monthlyLimit);
+    budgets[existing].updatedAt = new Date().toISOString();
+    db.write('budgets.json', budgets);
+    return res.json(budgets[existing]);
+  }
+
+  const budget = {
+    id: uuidv4(),
+    propertyId: prop.id,
+    propertyName: prop.shortName,
+    companyId: prop.companyId,
+    companyName: prop.companyName,
+    category,
+    monthlyLimit: parseFloat(monthlyLimit),
+    year: parseInt(year),
+    month: parseInt(month),
+    createdAt: new Date().toISOString(),
+    updatedAt: null
+  };
+  budgets.push(budget);
+  db.write('budgets.json', budgets);
+  res.status(201).json(budget);
+});
+
+app.post('/api/budgets/bulk', auth('admin'), (req, res) => {
+  const { budgets: items } = req.body;
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'budgets array required' });
+  const properties = db.read('properties.json');
+  const budgets = db.read('budgets.json');
+  const results = [];
+  for (const item of items) {
+    const { propertyId, category, monthlyLimit, year, month } = item;
+    if (!propertyId || !category || monthlyLimit === undefined || !year || !month) continue;
+    const prop = properties.find(p => p.id === propertyId);
+    if (!prop) continue;
+    const existing = budgets.findIndex(b => b.propertyId === propertyId && b.category === category && b.year === year && b.month === month);
+    if (existing !== -1) {
+      budgets[existing].monthlyLimit = parseFloat(monthlyLimit);
+      budgets[existing].updatedAt = new Date().toISOString();
+      results.push(budgets[existing]);
+    } else {
+      const budget = {
+        id: uuidv4(),
+        propertyId: prop.id, propertyName: prop.shortName,
+        companyId: prop.companyId, companyName: prop.companyName,
+        category, monthlyLimit: parseFloat(monthlyLimit),
+        year: parseInt(year), month: parseInt(month),
+        createdAt: new Date().toISOString(), updatedAt: null
+      };
+      budgets.push(budget);
+      results.push(budget);
+    }
+  }
+  db.write('budgets.json', budgets);
+  res.json(results);
+});
+
+app.delete('/api/budgets/:id', auth('admin'), (req, res) => {
+  const budgets = db.read('budgets.json');
+  const idx = budgets.findIndex(b => b.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Budget not found' });
+  budgets.splice(idx, 1);
+  db.write('budgets.json', budgets);
+  res.json({ ok: true });
+});
+
+// ── Finance Export ──
+
+app.get('/api/expenses/export/xlsx', auth('admin'), async (req, res) => {
+  const ExcelJS = require('exceljs');
+  let expenses = db.read('expenses.json');
+  const { from, to, propertyId, companyId, category } = req.query;
+  if (from) expenses = expenses.filter(e => e.date >= from);
+  if (to) expenses = expenses.filter(e => e.date <= to);
+  if (propertyId) expenses = expenses.filter(e => e.propertyId === propertyId);
+  if (companyId) expenses = expenses.filter(e => e.companyId === companyId);
+  if (category) expenses = expenses.filter(e => e.category === category);
+  expenses.sort((a, b) => a.date.localeCompare(b.date));
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Dépenses');
+  ws.columns = [
+    { header: 'Date', key: 'date', width: 12 },
+    { header: 'Propriété', key: 'propertyName', width: 18 },
+    { header: 'Compagnie', key: 'companyName', width: 30 },
+    { header: 'Catégorie', key: 'category', width: 28 },
+    { header: 'Montant ($)', key: 'amount', width: 14 },
+    { header: 'Fournisseur', key: 'supplier', width: 20 },
+    { header: 'Description', key: 'description', width: 35 },
+    { header: '# Facture', key: 'invoiceRef', width: 18 },
+    { header: 'Payé', key: 'paid', width: 8 },
+  ];
+  const headerRow = ws.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F3A5F' } };
+
+  expenses.forEach(e => {
+    ws.addRow({ ...e, paid: e.paid ? '✓' : '' });
+  });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename=depenses_drivcoh.xlsx');
+  await wb.xlsx.write(res);
+  res.end();
+});
 
 // ─── START ───────────────────────────────────────────────────────────────────
 

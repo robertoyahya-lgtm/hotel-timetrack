@@ -116,6 +116,10 @@ const NAV_ICONS = {
   payroll:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="12" height="9" rx="1.5"/><path d="M2 7h12M5 10.5h2"/></svg>',
   analytics:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12.5l3.5-4 3 2.5 3.5-6 2 3"/><path d="M2 14h12"/></svg>',
   account:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.6"/><path d="M3 13.5c.7-2.3 2.7-3.4 5-3.4s4.3 1.1 5 3.4"/></svg>',
+  finance:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13V5l4-2.5L10 5l4-2.5V13l-4 2.5L6 13 2 15.5z"/><path d="M6 2.5V13M10 5v10.5"/></svg>',
+  expenses:    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="2" width="11" height="12" rx="1.5"/><path d="M5 5.5h6M5 8h4M5 10.5h5"/></svg>',
+  budgets:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.5v7M6 6.2c0-.9.9-1.5 2-1.5s2 .6 2 1.5-.9 1.3-2 1.5-2 .7-2 1.5.9 1.5 2 1.5 2-.6 2-1.5"/></svg>',
+  reports:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z"/><path d="M6 5h4M6 7.5h4M6 10h2"/><path d="M11 5v6"/></svg>',
 };
 
 const NAV = {
@@ -154,6 +158,10 @@ const NAV = {
     { route: 'corrections', label: 'Corrections' },
     { route: 'payroll',     label: 'Payroll' },
     { route: 'analytics',   label: 'Analyse' },
+    { route: 'finance',     label: 'Finance', separator: true },
+    { route: 'expenses',    label: 'Dépenses' },
+    { route: 'budgets',     label: 'Budgets' },
+    { route: 'reports',     label: 'Rapports' },
     { route: 'account',     label: 'My Account' },
   ],
   accounting: [
@@ -167,7 +175,8 @@ const PAGE_TITLES = {
   clock: 'Clock In / Out', timesheet: 'My Timesheet', correction: 'Request Correction',
   overview: 'Overview', shifts: 'Shifts', validate: 'Validate Hours',
   corrections: 'Corrections', employees: 'Employees', payroll: 'Payroll',
-  analytics: 'Analyse', account: 'My Account'
+  analytics: 'Analyse', finance: 'Finance', expenses: 'Dépenses', budgets: 'Budgets', reports: 'Rapports',
+  account: 'My Account'
 };
 
 const DEFAULT_ROUTE = {
@@ -208,6 +217,10 @@ function navigate(route) {
     employees:   renderEmployees,
     payroll:     renderPayroll,
     analytics:   renderAnalytics,
+    finance:     renderFinanceDashboard,
+    expenses:    renderExpenses,
+    budgets:     renderBudgets,
+    reports:     renderReports,
     account:     renderAccount,
   };
   if (renders[route]) renders[route](user);
@@ -226,7 +239,8 @@ function renderSidebar(pendingCount = 0) {
     const badgeHtml = item.badge && pendingCount > 0
       ? `<span class="nav-badge">${pendingCount}</span>` : '';
     const icon = NAV_ICONS[item.route] || '';
-    return `<button class="nav-item" data-route="${item.route}">
+    const sep = item.separator ? '<div class="nav-separator"><span>Finance</span></div>' : '';
+    return `${sep}<button class="nav-item" data-route="${item.route}">
       <span class="nav-icon">${icon}</span>
       <span class="nav-label">${esc(item.label)}</span>
       ${badgeHtml}
@@ -2389,6 +2403,1360 @@ async function loadAnalytics() {
 // ═══════════════════════════════════════════════════════════════════════════
 // MY ACCOUNT (all roles)
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ─── FINANCE MODULE ─────────────────────────────────────────────────────────
+
+let _finProperties = null;
+let _finCategories = null;
+let _finCompanies  = null;
+let _dashYear = new Date().getFullYear();
+let _dashMonth = new Date().getMonth() + 1;
+
+async function finLoadMeta() {
+  if (!_finProperties) _finProperties = await GET('/api/properties');
+  if (!_finCategories) _finCategories = await GET('/api/expense-categories');
+  if (!_finCompanies)  _finCompanies  = await GET('/api/companies');
+}
+
+function fmtMoney(n) {
+  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n);
+}
+
+function fmtMoneyShort(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k $';
+  return Math.round(n) + ' $';
+}
+
+function pctBadge(pct) {
+  if (pct === null || pct === undefined) return '<span class="badge badge-completed">N/A</span>';
+  const cls = pct >= 100 ? 'badge-rejected' : pct >= 80 ? 'badge-pending' : 'badge-validated';
+  return `<span class="badge ${cls}">${pct}%</span>`;
+}
+
+function progressColor(pct) {
+  if (pct >= 75) return 'var(--red)';
+  if (pct >= 50) return '#e67e22';
+  return 'var(--green)';
+}
+
+function progressBarHtml(pct, spent, budget, label) {
+  const color = progressColor(pct);
+  const remaining = budget - spent;
+  return `<div class="fin-progress-item" title="${label}: ${pct}% utilisé — ${fmtMoney(spent)} dépensés — ${fmtMoney(Math.max(remaining, 0))} restants">
+    <div class="fin-progress-header">
+      <span class="fw600">${esc(label)}</span>
+      <span class="text-sm" style="color:${color}">${pct}% utilisé</span>
+    </div>
+    <div class="fin-progress-track">
+      <div class="fin-progress-fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div>
+    </div>
+    <div class="fin-progress-footer">
+      <span>${fmtMoney(spent)} dépensés</span>
+      <span>${fmtMoney(Math.max(remaining, 0))} restants</span>
+    </div>
+  </div>`;
+}
+
+const MONTH_NAMES = ['','Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+const MONTH_SHORT = ['','Jan','Fév','Mar','Avr','Mai','Jun','Jul','Aoû','Sep','Oct','Nov','Déc'];
+
+// ── Finance Dashboard ──
+
+async function renderFinanceDashboard() {
+  const body = document.getElementById('page-body');
+  await finLoadMeta();
+  const y = _dashYear;
+  const m = _dashMonth;
+  let stats;
+  try { stats = await GET(`/api/expenses/stats?year=${y}&month=${m}`); }
+  catch { body.innerHTML = '<div class="empty-state"><div class="empty-icon">!</div><div class="empty-title">Erreur de chargement</div></div>'; return; }
+
+  const mom = stats.monthOverMonth;
+  const momIcon = mom === null ? '' : mom > 0 ? '▲' : mom < 0 ? '▼' : '●';
+  const momColor = mom === null ? '' : mom > 0 ? 'var(--red)' : 'var(--green)';
+  const momHtml = mom !== null
+    ? `<span style="color:${momColor};font-size:12px;font-weight:600">${momIcon} ${Math.abs(mom)}% vs mois préc.</span>`
+    : '';
+
+  const scope = stats.breakdownScope;
+  const scopeLabel = scope === 'year' ? `Annuel ${y}` : `${MONTH_NAMES[m]} ${y}`;
+  const trendDir = stats.forecast.trendDirection;
+  const trendColor = trendDir === 'up' ? 'var(--red)' : trendDir === 'down' ? 'var(--green)' : 'var(--gray-400)';
+
+  // Global budget bar
+  const hasBudget = stats.totalAnnualBudget > 0;
+  const abPct = stats.annualBudgetPct || 0;
+  const abColor = progressColor(abPct);
+  const budgetBarHtml = hasBudget ? `
+    <div class="fin-global-budget">
+      <div class="fin-global-budget-header">
+        <div>
+          <span class="fin-global-budget-title">Budget annuel global ${y}</span>
+          <span class="fin-global-budget-amounts">${fmtMoney(stats.totalThisYear)} <span class="text-muted">sur</span> ${fmtMoney(stats.totalAnnualBudget)}</span>
+        </div>
+        <div class="fin-global-budget-pct" style="color:${abColor}">${abPct}%</div>
+      </div>
+      <div class="fin-global-budget-track">
+        <div class="fin-global-budget-fill" style="width:${Math.min(abPct, 100)}%;background:${abColor}"></div>
+      </div>
+      <div class="fin-global-budget-footer">
+        <span>${fmtMoney(Math.max(stats.totalAnnualBudget - stats.totalThisYear, 0))} restants</span>
+        <span>${abPct > 100 ? '⚠ Dépassement de ' + fmtMoney(stats.totalThisYear - stats.totalAnnualBudget) : abPct >= 80 ? '⚠ Attention — seuil critique' : '✓ Sous contrôle'}</span>
+      </div>
+    </div>
+  ` : `
+    <div class="fin-global-budget fin-global-budget--empty">
+      <div class="fin-global-budget-header">
+        <span class="fin-global-budget-title">Budget annuel global</span>
+        <a href="#" onclick="navigate('budgets');return false" class="btn btn-primary btn-sm">Configurer un budget</a>
+      </div>
+      <p class="text-muted text-sm" style="margin-top:8px">Ajoutez des budgets pour voir la progression globale et par propriété.</p>
+    </div>
+  `;
+
+  // Forecast projection sentence
+  const fcst = stats.forecast;
+  const projSentence = hasBudget && fcst.budgetVsProjection
+    ? `<div class="fin-projection-sentence">
+        Si vous continuez à ce rythme, vous terminerez l'année à environ <strong>${fmtMoney(fcst.budgetVsProjection.projected)}</strong>,
+        soit <strong style="color:${fcst.budgetVsProjection.overBudget ? 'var(--red)' : 'var(--green)'}">${fcst.budgetVsProjection.pct}%</strong> du budget annuel.
+        ${fcst.budgetVsProjection.overBudget ? '<span class="fin-proj-warn">⚠ Dépassement projeté</span>' : '<span class="fin-proj-ok">✓ Dans les limites</span>'}
+      </div>`
+    : '';
+
+  body.innerHTML = `
+    <div class="fin-header">
+      <h2 class="fin-title">Dashboard Financier</h2>
+      <div class="fin-month-nav">
+        <button class="btn btn-outline btn-sm" onclick="finNavMonth(-1)">←</button>
+        <span class="fin-month-label">${MONTH_NAMES[m]} ${y}</span>
+        <button class="btn btn-outline btn-sm" onclick="finNavMonth(1)">→</button>
+      </div>
+    </div>
+
+    <!-- KPI Cards Row 1 -->
+    <div class="fin-kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <div class="fin-kpi-card fin-kpi-card--accent">
+        <div class="fin-kpi-label">Dépenses — ${MONTH_SHORT[m]}</div>
+        <div class="fin-kpi-value">${fmtMoney(stats.totalThisMonth)}</div>
+        <div class="fin-kpi-sub">${momHtml || stats.expenseCount + ' transaction(s)'}</div>
+      </div>
+      <div class="fin-kpi-card">
+        <div class="fin-kpi-label">Total annuel ${y}</div>
+        <div class="fin-kpi-value">${fmtMoney(stats.totalThisYear)}</div>
+        <div class="fin-kpi-sub">${stats.totalExpenses} dépenses au total</div>
+      </div>
+      <div class="fin-kpi-card">
+        <div class="fin-kpi-label">Moyenne / jour</div>
+        <div class="fin-kpi-value">${fmtMoney(stats.avgPerDay)}</div>
+        <div class="fin-kpi-sub">${stats.expenseCount} transaction(s) ce mois</div>
+      </div>
+      <div class="fin-kpi-card">
+        <div class="fin-kpi-label">Moyenne / mois</div>
+        <div class="fin-kpi-value">${fmtMoney(fcst.avgMonthlySpend)}</div>
+        <div class="fin-kpi-sub"><span style="color:${trendColor};font-weight:600">${trendDir === 'up' ? '↗ En hausse' : trendDir === 'down' ? '↘ En baisse' : '→ Stable'}</span></div>
+      </div>
+    </div>
+
+    <!-- GLOBAL BUDGET BAR -->
+    ${budgetBarHtml}
+
+    <!-- Budget Alerts -->
+    ${stats.budgetAlerts.length > 0 ? `
+    <div class="fin-alerts-section">
+      <div class="fin-section-title">⚠ Alertes Budget</div>
+      ${stats.budgetAlerts.map(a => `
+        <div class="fin-alert-card">
+          <div class="fin-alert-icon">⚠</div>
+          <div class="fin-alert-info">
+            <span class="fw600">${esc(a.propertyName)}</span> — ${esc(a.category)}
+          </div>
+          <div class="fin-alert-amounts">${fmtMoney(a.spent)} / ${fmtMoney(a.limit)}</div>
+          <div class="fin-alert-pct" style="color:${progressColor(a.pct)}">${a.pct}%</div>
+        </div>
+      `).join('')}
+    </div>` : ''}
+
+    <!-- Trend Chart -->
+    <div class="card fin-card-animate">
+      <div class="card-head">
+        <span>Comparatif mensuel — ${y}</span>
+        <span class="text-muted text-sm">(cliquez sur une barre pour détails)</span>
+      </div>
+      <div class="card-body">
+        <div class="fin-bar-chart" id="fin-trend-chart"></div>
+      </div>
+    </div>
+
+    <!-- Forecasting -->
+    <div class="card fin-card-animate">
+      <div class="card-head">Prévisions & Projections</div>
+      <div class="card-body">
+        <div class="fin-forecast-grid">
+          <div class="fin-forecast-item">
+            <div class="fin-forecast-label">Estimation fin ${MONTH_SHORT[m]}</div>
+            <div class="fin-forecast-value">${fmtMoney(fcst.estimatedMonthEnd)}</div>
+          </div>
+          <div class="fin-forecast-item">
+            <div class="fin-forecast-label">Projection fin ${y}</div>
+            <div class="fin-forecast-value">${fmtMoney(fcst.estimatedYearEnd)}</div>
+          </div>
+          <div class="fin-forecast-item">
+            <div class="fin-forecast-label">Moyenne mensuelle</div>
+            <div class="fin-forecast-value">${fmtMoney(fcst.avgMonthlySpend)}</div>
+          </div>
+          <div class="fin-forecast-item">
+            <div class="fin-forecast-label">Tendance</div>
+            <div class="fin-forecast-value" style="color:${trendColor}">${trendDir === 'up' ? 'En hausse ↗' : trendDir === 'down' ? 'En baisse ↘' : 'Stable →'}</div>
+          </div>
+        </div>
+        ${projSentence}
+        ${fcst.categoriesAtRisk.length > 0 ? `
+        <div class="fin-risk-box">
+          <strong>⚠ Catégories à risque :</strong>
+          ${fcst.categoriesAtRisk.map(c => `<span class="fin-risk-chip">${esc(c.category)} (moy. ${fmtMoney(c.avgMonthly)}/mois vs budget ${fmtMoney(c.budget)})</span>`).join('')}
+        </div>` : ''}
+      </div>
+    </div>
+
+    <!-- Annual Budget Summary per Property -->
+    ${stats.annualBudgetSummary && stats.annualBudgetSummary.length > 0 ? `
+    <div class="card fin-card-animate">
+      <div class="card-head">Sommaire budgétaire par propriété — ${y}</div>
+      <div class="card-body">
+        <div class="fin-prop-budget-grid">
+          ${stats.annualBudgetSummary.map(p => `
+            <div class="fin-prop-budget-card fin-prop-budget-clickable" onclick="finPropertyDrillDown('${esc(p.propertyId)}', '${esc(p.name)}', ${y})">
+              <div class="fin-prop-budget-name">${esc(p.name)}</div>
+              <div class="fin-prop-budget-company">${esc(p.companyName)}</div>
+              <div class="fin-prop-budget-row">
+                <span>Dépensé</span><span class="fw600">${fmtMoney(p.spent)}</span>
+              </div>
+              <div class="fin-prop-budget-track">
+                <div class="fin-prop-budget-fill" style="width:${Math.min(p.pct, 100)}%;background:${progressColor(p.pct)}"></div>
+              </div>
+              <div class="fin-prop-budget-row">
+                <span style="color:${progressColor(p.pct)};font-weight:700">${p.pct}% utilisé</span>
+                <span class="text-muted">${fmtMoney(Math.max(p.remaining, 0))} restants</span>
+              </div>
+              <div class="fin-prop-budget-footer">
+                <span>Budget : ${fmtMoney(p.annualBudget)}</span>
+                <span>${p.count} transactions ›</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>` : ''}
+
+    <!-- Rankings -->
+    <div class="fin-charts-row">
+      <div class="card fin-card-animate" style="flex:1;min-width:0">
+        <div class="card-head">Top Propriétés <span class="text-muted text-sm">(${scopeLabel})</span></div>
+        <div class="card-body">
+          ${stats.byProperty.length > 0 ? stats.byProperty.map((p, i) => {
+            const max = stats.byProperty[0]?.total || 1;
+            const pct = Math.round((p.total / max) * 100);
+            return `<div class="fin-rank-row">
+              <span class="fin-rank-num">${i + 1}</span>
+              <span class="fin-rank-name" title="${esc(p.name)}">${esc(p.name)}</span>
+              <div class="fin-rank-bar-wrap"><div class="fin-rank-bar" style="width:${pct}%"></div></div>
+              <span class="fin-rank-val">${fmtMoneyShort(p.total)}</span>
+              <span class="fin-rank-count">${p.count}x</span>
+            </div>`;
+          }).join('') : '<p class="text-muted text-center">Aucune donnée</p>'}
+        </div>
+      </div>
+      <div class="card fin-card-animate" style="flex:1;min-width:0">
+        <div class="card-head">Top Catégories <span class="text-muted text-sm">(${scopeLabel})</span></div>
+        <div class="card-body">
+          ${stats.byCategory.length > 0 ? stats.byCategory.map((c, i) => {
+            const max = stats.byCategory[0]?.total || 1;
+            const pct = Math.round((c.total / max) * 100);
+            return `<div class="fin-rank-row">
+              <span class="fin-rank-num">${i + 1}</span>
+              <span class="fin-rank-name" title="${esc(c.category)}">${esc(c.category)}</span>
+              <div class="fin-rank-bar-wrap"><div class="fin-rank-bar fin-rank-bar-cat" style="width:${pct}%"></div></div>
+              <span class="fin-rank-val">${fmtMoneyShort(c.total)}</span>
+              <span class="fin-rank-count">${c.count}x</span>
+            </div>`;
+          }).join('') : '<p class="text-muted text-center">Aucune donnée</p>'}
+        </div>
+      </div>
+    </div>
+
+    <div class="fin-charts-row">
+      <div class="card fin-card-animate" style="flex:1;min-width:0">
+        <div class="card-head">Top Fournisseurs <span class="text-muted text-sm">(${scopeLabel})</span></div>
+        <div class="card-body">
+          ${stats.rankings.topSuppliers.length > 0 ? stats.rankings.topSuppliers.slice(0, 8).map((s, i) => {
+            const max = stats.rankings.topSuppliers[0]?.total || 1;
+            const pct = Math.round((s.total / max) * 100);
+            return `<div class="fin-rank-row">
+              <span class="fin-rank-num">${i + 1}</span>
+              <span class="fin-rank-name" title="${esc(s.name)}">${esc(s.name)}</span>
+              <div class="fin-rank-bar-wrap"><div class="fin-rank-bar fin-rank-bar-supplier" style="width:${pct}%"></div></div>
+              <span class="fin-rank-val">${fmtMoneyShort(s.total)}</span>
+              <span class="fin-rank-count">${s.count}x</span>
+            </div>`;
+          }).join('') : '<p class="text-muted text-center">Aucune donnée</p>'}
+        </div>
+      </div>
+      <div class="card fin-card-animate" style="flex:1;min-width:0">
+        <div class="card-head">Par Compagnie <span class="text-muted text-sm">(${scopeLabel})</span></div>
+        <div class="card-body" style="overflow-x:auto">
+          ${stats.byCompany.length > 0 ? `
+          <table class="table"><thead><tr><th>Compagnie</th><th style="text-align:right">Montant</th><th style="text-align:right">#</th></tr></thead><tbody>
+          ${stats.byCompany.map(c => `<tr><td class="fw600">${esc(c.name)}</td><td style="text-align:right">${fmtMoney(c.total)}</td><td style="text-align:right">${c.count}</td></tr>`).join('')}
+          </tbody></table>` : '<p class="text-muted text-center">Aucune donnée</p>'}
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Expenses -->
+    <div class="card fin-card-animate">
+      <div class="card-head">Dernières dépenses</div>
+      <div class="card-body" style="overflow-x:auto">
+        <table class="table"><thead><tr><th>Date</th><th>Propriété</th><th>Catégorie</th><th>Fournisseur</th><th>Description</th><th style="text-align:right">Montant</th><th>Reçu</th></tr></thead><tbody>
+        ${stats.recentExpenses.map(e => `<tr>
+          <td>${fmtDate(e.date + 'T00:00:00')}</td>
+          <td class="fw600">${esc(e.propertyName)}</td>
+          <td><span class="fin-cat-chip">${esc(e.category)}</span></td>
+          <td>${esc(e.supplier || '—')}</td>
+          <td class="text-muted">${esc((e.description || '—').substring(0, 40))}</td>
+          <td style="text-align:right" class="fw600">${fmtMoney(e.amount)}</td>
+          <td style="text-align:center">${e.receiptPath ? '<span class="badge badge-validated" style="cursor:pointer" onclick="viewReceipt(\'' + e.receiptPath + '\')">📎</span>' : '—'}</td>
+        </tr>`).join('')}
+        ${stats.recentExpenses.length === 0 ? '<tr><td colspan="7" class="text-center text-muted">Aucune dépense</td></tr>' : ''}
+        </tbody></table>
+      </div>
+    </div>
+  `;
+
+  finRenderTrendChart(stats.monthlyTrend);
+}
+
+function finNavMonth(delta) {
+  _dashMonth += delta;
+  if (_dashMonth > 12) { _dashMonth = 1; _dashYear++; }
+  if (_dashMonth < 1) { _dashMonth = 12; _dashYear--; }
+  renderFinanceDashboard();
+}
+
+function finRenderTrendChart(trend) {
+  const container = document.getElementById('fin-trend-chart');
+  if (!container) return;
+  const max = Math.max(...trend.map(t => t.total), 1);
+  const maxBarH = 180; // max bar height in pixels
+  const currentMonth = `${_dashYear}-${String(_dashMonth).padStart(2, '0')}`;
+  container.innerHTML = trend.map((t, idx) => {
+    const barH = t.total > 0 ? Math.max(Math.round((t.total / max) * maxBarH), 8) : 4;
+    const mNum = parseInt(t.month.split('-')[1]);
+    const label = MONTH_SHORT[mNum] || t.month.slice(5);
+    const isCurrent = t.month === currentMonth;
+    const hasData = t.total > 0;
+    return `<div class="fin-bar-col ${hasData ? 'fin-bar-clickable' : 'fin-bar-empty'} ${isCurrent ? 'fin-bar-current' : ''}"
+      onclick="${hasData ? `finDrillDown('${t.month}')` : ''}"
+      style="animation-delay:${idx * 40}ms">
+      <div class="fin-bar-value">${hasData ? fmtMoneyShort(t.total) : ''}</div>
+      <div class="fin-bar" style="height:${barH}px"></div>
+      <div class="fin-bar-label">${label}</div>
+      <div class="fin-bar-count">${t.count > 0 ? t.count + 'x' : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+async function finDrillDown(month) {
+  let detail;
+  try { detail = await GET('/api/expenses/month-detail?month=' + month); } catch { toast('Erreur', 'err'); return; }
+  const mNum = parseInt(month.split('-')[1]);
+  const yNum = parseInt(month.split('-')[0]);
+
+  showModalLg(`
+    <h3 style="margin-bottom:16px">Détail — ${MONTH_NAMES[mNum]} ${yNum}</h3>
+    <div class="fin-kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Total</div><div class="fin-kpi-value">${fmtMoney(detail.total)}</div></div>
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Transactions</div><div class="fin-kpi-value">${detail.count}</div></div>
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Moyenne</div><div class="fin-kpi-value">${fmtMoney(detail.count > 0 ? detail.total / detail.count : 0)}</div></div>
+    </div>
+
+    <div class="fin-charts-row" style="margin-bottom:16px">
+      <div style="flex:1">
+        <h4 class="text-sm fw600 mb8">Par Propriété</h4>
+        ${detail.byProperty.map(p => {
+          const pct = Math.round((p.total / detail.total) * 100);
+          return `<div class="fin-rank-row">
+            <span class="fin-rank-name">${esc(p.name)}</span>
+            <div class="fin-rank-bar-wrap"><div class="fin-rank-bar" style="width:${pct}%"></div></div>
+            <span class="fin-rank-val">${fmtMoney(p.total)}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="flex:1">
+        <h4 class="text-sm fw600 mb8">Par Catégorie</h4>
+        ${detail.byCategory.map(c => {
+          const pct = Math.round((c.total / detail.total) * 100);
+          return `<div class="fin-rank-row">
+            <span class="fin-rank-name">${esc(c.category)}</span>
+            <div class="fin-rank-bar-wrap"><div class="fin-rank-bar fin-rank-bar-cat" style="width:${pct}%"></div></div>
+            <span class="fin-rank-val">${fmtMoney(c.total)}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    ${detail.bySupplier.length > 0 ? `
+    <h4 class="text-sm fw600 mb8">Top Fournisseurs</h4>
+    <div class="fin-chips-row mb12">${detail.bySupplier.map(s => `<span class="fin-cat-chip">${esc(s.name)} — ${fmtMoney(s.total)} (${s.count}x)</span>`).join('')}</div>` : ''}
+
+    <h4 class="text-sm fw600 mb8">Détail des dépenses</h4>
+    <div style="max-height:300px;overflow-y:auto">
+      <table class="table"><thead><tr><th>Date</th><th>Propriété</th><th>Catégorie</th><th>Description</th><th style="text-align:right">Montant</th></tr></thead><tbody>
+      ${detail.expenses.map(e => `<tr>
+        <td>${fmtDate(e.date + 'T00:00:00')}</td>
+        <td class="fw600">${esc(e.propertyName)}</td>
+        <td>${esc(e.category)}</td>
+        <td class="text-muted">${esc(e.description || '—')}</td>
+        <td style="text-align:right" class="fw600">${fmtMoney(e.amount)}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>
+
+    <div style="text-align:right;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Fermer</button>
+    </div>
+  `);
+}
+
+async function finPropertyDrillDown(propertyId, propertyName, year) {
+  let detail;
+  try { detail = await GET(`/api/expenses/property-detail?propertyId=${propertyId}&year=${year}`); } catch { toast('Erreur', 'err'); return; }
+
+  showModalLg(`
+    <h3 style="margin-bottom:16px">${esc(propertyName)} — ${year}</h3>
+    <div class="fin-kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Total dépensé</div><div class="fin-kpi-value">${fmtMoney(detail.total)}</div></div>
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Transactions</div><div class="fin-kpi-value">${detail.count}</div></div>
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Moyenne</div><div class="fin-kpi-value">${fmtMoney(detail.count > 0 ? detail.total / detail.count : 0)}</div></div>
+    </div>
+
+    <div class="fin-charts-row" style="margin-bottom:16px">
+      <div style="flex:1">
+        <h4 class="text-sm fw600 mb8">Par Catégorie</h4>
+        ${detail.byCategory.map(c => {
+          const pct = detail.total > 0 ? Math.round((c.total / detail.total) * 100) : 0;
+          return `<div class="fin-rank-row">
+            <span class="fin-rank-name">${esc(c.category)}</span>
+            <div class="fin-rank-bar-wrap"><div class="fin-rank-bar fin-rank-bar-cat" style="width:${pct}%"></div></div>
+            <span class="fin-rank-val">${fmtMoney(c.total)}</span>
+            <span class="fin-rank-count">${c.count}x</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="flex:1">
+        <h4 class="text-sm fw600 mb8">Par Mois</h4>
+        ${detail.byMonth.map(m => {
+          const mMax = Math.max(...detail.byMonth.map(x => x.total), 1);
+          const pct = Math.round((m.total / mMax) * 100);
+          const mNum = parseInt(m.month.split('-')[1]);
+          return `<div class="fin-rank-row">
+            <span class="fin-rank-name">${MONTH_SHORT[mNum]}</span>
+            <div class="fin-rank-bar-wrap"><div class="fin-rank-bar" style="width:${pct}%"></div></div>
+            <span class="fin-rank-val">${fmtMoney(m.total)}</span>
+            <span class="fin-rank-count">${m.count}x</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    ${detail.bySupplier.length > 0 ? `
+    <h4 class="text-sm fw600 mb8">Top Fournisseurs</h4>
+    <div class="fin-chips-row mb12">${detail.bySupplier.map(s => `<span class="fin-cat-chip">${esc(s.name)} — ${fmtMoney(s.total)} (${s.count}x)</span>`).join('')}</div>` : ''}
+
+    <h4 class="text-sm fw600 mb8">Détail des transactions (${detail.count})</h4>
+    <div style="max-height:300px;overflow-y:auto">
+      <table class="table"><thead><tr><th>Date</th><th>Catégorie</th><th>Fournisseur</th><th>Description</th><th style="text-align:right">Montant</th></tr></thead><tbody>
+      ${detail.expenses.map(e => `<tr>
+        <td>${fmtDate(e.date + 'T00:00:00')}</td>
+        <td>${esc(e.category)}</td>
+        <td class="fw600">${esc(e.supplier || '—')}</td>
+        <td class="text-muted">${esc(e.description || '—')}</td>
+        <td style="text-align:right" class="fw600">${fmtMoney(e.amount)}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>
+
+    <div style="text-align:right;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Fermer</button>
+    </div>
+  `);
+}
+
+// ── Reports Page ──
+
+let _rptFilters = { from: '', to: '', propertyId: '', companyId: '', category: '', supplier: '' };
+
+async function renderReports() {
+  const body = document.getElementById('page-body');
+  await finLoadMeta();
+
+  if (!_rptFilters.from) _rptFilters.from = `${new Date().getFullYear()}-01-01`;
+  if (!_rptFilters.to) _rptFilters.to = new Date().toISOString().slice(0, 10);
+
+  body.innerHTML = `
+    <div class="fin-header">
+      <h2 class="fin-title">Rapports Avancés</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="generateReport()">Générer</button>
+        <button class="btn btn-outline" onclick="exportReport()">Export Excel</button>
+      </div>
+    </div>
+
+    <div class="card mb12">
+      <div class="card-body">
+        <div class="fin-filters">
+          <div class="fin-filter-group">
+            <label>Du</label>
+            <input type="date" class="form-control" id="rpt-from" value="${_rptFilters.from}" onchange="_rptFilters.from=this.value">
+          </div>
+          <div class="fin-filter-group">
+            <label>Au</label>
+            <input type="date" class="form-control" id="rpt-to" value="${_rptFilters.to}" onchange="_rptFilters.to=this.value">
+          </div>
+          <div class="fin-filter-group">
+            <label>Propriété</label>
+            <select class="form-control" id="rpt-prop" onchange="_rptFilters.propertyId=this.value">
+              <option value="">Toutes</option>
+              ${_finProperties.map(p => `<option value="${p.id}" ${_rptFilters.propertyId === p.id ? 'selected' : ''}>${esc(p.shortName)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fin-filter-group">
+            <label>Compagnie</label>
+            <select class="form-control" id="rpt-company" onchange="_rptFilters.companyId=this.value">
+              <option value="">Toutes</option>
+              ${_finCompanies.map(c => `<option value="${c.id}" ${_rptFilters.companyId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fin-filter-group">
+            <label>Catégorie</label>
+            <select class="form-control" id="rpt-cat" onchange="_rptFilters.category=this.value">
+              <option value="">Toutes</option>
+              ${_finCategories.map(c => `<option value="${c}" ${_rptFilters.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fin-filter-group">
+            <label>Fournisseur</label>
+            <input type="text" class="form-control" id="rpt-supplier" placeholder="Nom..." value="${esc(_rptFilters.supplier)}" oninput="_rptFilters.supplier=this.value">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="report-output"></div>
+  `;
+  generateReport();
+}
+
+async function generateReport() {
+  const output = document.getElementById('report-output');
+  if (!output) return;
+  output.innerHTML = '<p class="text-center text-muted">Chargement...</p>';
+
+  const params = new URLSearchParams();
+  if (_rptFilters.from) params.set('from', _rptFilters.from);
+  if (_rptFilters.to) params.set('to', _rptFilters.to);
+  if (_rptFilters.propertyId) params.set('propertyId', _rptFilters.propertyId);
+  if (_rptFilters.companyId) params.set('companyId', _rptFilters.companyId);
+  if (_rptFilters.category) params.set('category', _rptFilters.category);
+  if (_rptFilters.supplier) params.set('search', _rptFilters.supplier);
+
+  let expenses;
+  try { expenses = await GET('/api/expenses?' + params.toString()); }
+  catch { output.innerHTML = '<p class="text-muted">Erreur</p>'; return; }
+
+  if (expenses.length === 0) {
+    output.innerHTML = '<div class="card"><div class="card-body text-center text-muted">Aucune dépense pour ces filtres.</div></div>';
+    return;
+  }
+
+  const total = expenses.reduce((s, e) => s + e.amount, 0);
+  const avg = total / expenses.length;
+
+  // Rankings
+  const byProp = {}, byCat = {}, bySupp = {}, byMonth = {};
+  expenses.forEach(e => {
+    const pk = e.propertyId;
+    if (!byProp[pk]) byProp[pk] = { name: e.propertyName, company: e.companyName, total: 0, count: 0 };
+    byProp[pk].total += e.amount; byProp[pk].count++;
+
+    if (!byCat[e.category]) byCat[e.category] = { total: 0, count: 0 };
+    byCat[e.category].total += e.amount; byCat[e.category].count++;
+
+    const s = (e.supplier || '').trim();
+    if (s) {
+      const sk = s.toLowerCase();
+      if (!bySupp[sk]) bySupp[sk] = { name: s, total: 0, count: 0 };
+      bySupp[sk].total += e.amount; bySupp[sk].count++;
+    }
+
+    const mo = e.date.slice(0, 7);
+    if (!byMonth[mo]) byMonth[mo] = { total: 0, count: 0 };
+    byMonth[mo].total += e.amount; byMonth[mo].count++;
+  });
+
+  const propArr = Object.values(byProp).sort((a, b) => b.total - a.total);
+  const catArr = Object.entries(byCat).map(([k, v]) => ({ name: k, ...v })).sort((a, b) => b.total - a.total);
+  const suppArr = Object.values(bySupp).sort((a, b) => b.total - a.total);
+  const monthArr = Object.entries(byMonth).sort().map(([m, v]) => ({ month: m, ...v }));
+
+  output.innerHTML = `
+    <!-- Summary KPIs -->
+    <div class="fin-kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Total</div><div class="fin-kpi-value">${fmtMoney(total)}</div></div>
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Transactions</div><div class="fin-kpi-value">${expenses.length}</div></div>
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Moyenne</div><div class="fin-kpi-value">${fmtMoney(avg)}</div></div>
+      <div class="fin-kpi-card"><div class="fin-kpi-label">Période</div><div class="fin-kpi-value text-sm">${_rptFilters.from || '—'} → ${_rptFilters.to || '—'}</div></div>
+    </div>
+
+    <!-- Monthly comparison -->
+    ${monthArr.length > 1 ? `
+    <div class="card mb12">
+      <div class="card-head">Comparatif mensuel</div>
+      <div class="card-body">
+        <div class="fin-bar-chart" id="rpt-month-chart" style="height:200px"></div>
+      </div>
+    </div>` : ''}
+
+    <!-- Rankings -->
+    <div class="fin-charts-row">
+      <div class="card mb12" style="flex:1">
+        <div class="card-head">Classement Propriétés</div>
+        <div class="card-body">
+          ${propArr.map((p, i) => {
+            const pct = Math.round((p.total / (propArr[0]?.total || 1)) * 100);
+            const share = Math.round((p.total / total) * 100);
+            return `<div class="fin-rank-row">
+              <span class="fin-rank-num">${i + 1}</span>
+              <span class="fin-rank-name">${esc(p.name)}</span>
+              <div class="fin-rank-bar-wrap"><div class="fin-rank-bar" style="width:${pct}%"></div></div>
+              <span class="fin-rank-val">${fmtMoney(p.total)}</span>
+              <span class="fin-rank-count">${share}%</span>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+      <div class="card mb12" style="flex:1">
+        <div class="card-head">Classement Catégories</div>
+        <div class="card-body">
+          ${catArr.map((c, i) => {
+            const pct = Math.round((c.total / (catArr[0]?.total || 1)) * 100);
+            const share = Math.round((c.total / total) * 100);
+            return `<div class="fin-rank-row">
+              <span class="fin-rank-num">${i + 1}</span>
+              <span class="fin-rank-name">${esc(c.name)}</span>
+              <div class="fin-rank-bar-wrap"><div class="fin-rank-bar fin-rank-bar-cat" style="width:${pct}%"></div></div>
+              <span class="fin-rank-val">${fmtMoney(c.total)}</span>
+              <span class="fin-rank-count">${share}%</span>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+
+    ${suppArr.length > 0 ? `
+    <div class="card mb12">
+      <div class="card-head">Classement Fournisseurs</div>
+      <div class="card-body">
+        ${suppArr.slice(0, 10).map((s, i) => {
+          const pct = Math.round((s.total / (suppArr[0]?.total || 1)) * 100);
+          return `<div class="fin-rank-row">
+            <span class="fin-rank-num">${i + 1}</span>
+            <span class="fin-rank-name" title="${esc(s.name)}">${esc(s.name)}</span>
+            <div class="fin-rank-bar-wrap"><div class="fin-rank-bar fin-rank-bar-supplier" style="width:${pct}%"></div></div>
+            <span class="fin-rank-val">${fmtMoney(s.total)}</span>
+            <span class="fin-rank-count">${s.count}x</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : ''}
+
+    <!-- Detail table -->
+    <div class="card mb12">
+      <div class="card-head">Détail des dépenses (${expenses.length})</div>
+      <div class="card-body" style="overflow-x:auto">
+        <table class="table"><thead><tr>
+          <th>Date</th><th>Propriété</th><th>Compagnie</th><th>Catégorie</th><th>Fournisseur</th><th>Description</th><th style="text-align:right">Montant</th><th>Reçu</th>
+        </tr></thead><tbody>
+        ${expenses.slice(0, 100).map(e => `<tr>
+          <td>${fmtDate(e.date + 'T00:00:00')}</td>
+          <td class="fw600">${esc(e.propertyName)}</td>
+          <td class="text-muted">${esc(e.companyName)}</td>
+          <td><span class="fin-cat-chip">${esc(e.category)}</span></td>
+          <td>${esc(e.supplier || '—')}</td>
+          <td class="text-muted">${esc(e.description || '—')}</td>
+          <td style="text-align:right" class="fw600">${fmtMoney(e.amount)}</td>
+          <td style="text-align:center">${e.receiptPath ? '<span class="badge badge-validated" style="cursor:pointer" onclick="viewReceipt(\'' + e.receiptPath + '\')">📎</span>' : '—'}</td>
+        </tr>`).join('')}
+        ${expenses.length > 100 ? `<tr><td colspan="8" class="text-center text-muted">... et ${expenses.length - 100} de plus — exportez pour voir tout</td></tr>` : ''}
+        </tbody></table>
+      </div>
+    </div>
+  `;
+
+  // Render monthly comparison chart
+  if (monthArr.length > 1) {
+    const chartEl = document.getElementById('rpt-month-chart');
+    if (chartEl) {
+      const maxM = Math.max(...monthArr.map(m => m.total), 1);
+      const maxBarH = 140; // max bar height in pixels for reports chart
+      chartEl.innerHTML = monthArr.map(m => {
+        const barH = m.total > 0 ? Math.max(Math.round((m.total / maxM) * maxBarH), 8) : 4;
+        const mNum = parseInt(m.month.split('-')[1]);
+        return `<div class="fin-bar-col">
+          <div class="fin-bar-value">${fmtMoneyShort(m.total)}</div>
+          <div class="fin-bar" style="height:${barH}px"></div>
+          <div class="fin-bar-label">${MONTH_SHORT[mNum]} ${m.month.slice(0, 4)}</div>
+        </div>`;
+      }).join('');
+    }
+  }
+}
+
+async function exportReport() {
+  const params = new URLSearchParams();
+  if (_rptFilters.from) params.set('from', _rptFilters.from);
+  if (_rptFilters.to) params.set('to', _rptFilters.to);
+  if (_rptFilters.propertyId) params.set('propertyId', _rptFilters.propertyId);
+  if (_rptFilters.companyId) params.set('companyId', _rptFilters.companyId);
+  if (_rptFilters.category) params.set('category', _rptFilters.category);
+  try {
+    const res = await fetch('/api/expenses/export/xlsx?' + params.toString(), { headers: { Authorization: 'Bearer ' + getToken() } });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'rapport_depenses.xlsx'; a.click();
+    URL.revokeObjectURL(url);
+  } catch { toast('Erreur export', 'err'); }
+}
+
+// ── Expenses Page ──
+
+let _expFilters = { from: '', to: '', propertyId: '', companyId: '', category: '', search: '' };
+
+async function renderExpenses() {
+  const body = document.getElementById('page-body');
+  await finLoadMeta();
+
+  const now = new Date();
+  if (!_expFilters.from) _expFilters.from = `${now.getFullYear()}-01-01`;
+  if (!_expFilters.to)   _expFilters.to = now.toISOString().slice(0, 10);
+
+  body.innerHTML = `
+    <div class="fin-header">
+      <h2 class="fin-title">Gestion des Dépenses</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="showAddExpenseModal()">+ Ajouter</button>
+        <button class="btn btn-outline" onclick="showUploadReceiptModal()">Reçu</button>
+        <button class="btn btn-outline" onclick="exportExpenses()">Export</button>
+      </div>
+    </div>
+
+    <div class="card mb12">
+      <div class="card-body">
+        <div class="fin-filters">
+          <div class="fin-filter-group">
+            <label>Du</label>
+            <input type="date" class="form-control" id="exp-from" value="${_expFilters.from}" onchange="_expFilters.from=this.value;loadExpensesList()">
+          </div>
+          <div class="fin-filter-group">
+            <label>Au</label>
+            <input type="date" class="form-control" id="exp-to" value="${_expFilters.to}" onchange="_expFilters.to=this.value;loadExpensesList()">
+          </div>
+          <div class="fin-filter-group">
+            <label>Propriété</label>
+            <select class="form-control" id="exp-prop" onchange="_expFilters.propertyId=this.value;loadExpensesList()">
+              <option value="">Toutes</option>
+              ${_finProperties.map(p => `<option value="${p.id}" ${_expFilters.propertyId === p.id ? 'selected' : ''}>${esc(p.shortName)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fin-filter-group">
+            <label>Compagnie</label>
+            <select class="form-control" id="exp-company" onchange="_expFilters.companyId=this.value;loadExpensesList()">
+              <option value="">Toutes</option>
+              ${_finCompanies.map(c => `<option value="${c.id}" ${_expFilters.companyId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fin-filter-group">
+            <label>Catégorie</label>
+            <select class="form-control" id="exp-cat" onchange="_expFilters.category=this.value;loadExpensesList()">
+              <option value="">Toutes</option>
+              ${_finCategories.map(c => `<option value="${c}" ${_expFilters.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fin-filter-group" style="flex:1.5">
+            <label>Recherche</label>
+            <input type="text" class="form-control" id="exp-search" placeholder="Description, fournisseur..." value="${esc(_expFilters.search)}" oninput="clearTimeout(window._expSrch);window._expSrch=setTimeout(()=>{_expFilters.search=this.value;loadExpensesList()},300)">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body" style="overflow-x:auto">
+        <div id="expenses-summary" class="mb12"></div>
+        <table class="table" id="expenses-table">
+          <thead><tr>
+            <th>Date</th><th>Propriété</th><th>Catégorie</th><th>Description</th><th>Fournisseur</th>
+            <th style="text-align:right">Montant</th><th>Reçu</th><th style="text-align:center">Actions</th>
+          </tr></thead>
+          <tbody id="expenses-tbody"><tr><td colspan="8" class="text-center text-muted">Chargement...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  loadExpensesList();
+}
+
+async function loadExpensesList() {
+  const tbody = document.getElementById('expenses-tbody');
+  const sumDiv = document.getElementById('expenses-summary');
+  if (!tbody) return;
+
+  const params = new URLSearchParams();
+  if (_expFilters.from) params.set('from', _expFilters.from);
+  if (_expFilters.to) params.set('to', _expFilters.to);
+  if (_expFilters.propertyId) params.set('propertyId', _expFilters.propertyId);
+  if (_expFilters.companyId) params.set('companyId', _expFilters.companyId);
+  if (_expFilters.category) params.set('category', _expFilters.category);
+  if (_expFilters.search) params.set('search', _expFilters.search);
+
+  let expenses;
+  try { expenses = await GET('/api/expenses?' + params.toString()); }
+  catch { tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Erreur de chargement</td></tr>'; return; }
+
+  const total = expenses.reduce((s, e) => s + e.amount, 0);
+  sumDiv.innerHTML = `<span class="fw600">${expenses.length}</span> dépense(s) — Total: <span class="fw600">${fmtMoney(total)}</span>`;
+
+  if (expenses.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Aucune dépense trouvée</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = expenses.map(e => `<tr>
+    <td>${fmtDate(e.date + 'T00:00:00')}</td>
+    <td class="fw600">${esc(e.propertyName)}</td>
+    <td><span class="fin-cat-chip">${esc(e.category)}</span></td>
+    <td class="text-muted">${esc(e.description || '—')}</td>
+    <td>${esc(e.supplier || '—')}</td>
+    <td style="text-align:right" class="fw600">${fmtMoney(e.amount)}</td>
+    <td style="text-align:center">${e.receiptPath ? '<span class="badge badge-validated" title="Reçu joint" style="cursor:pointer" onclick="viewReceipt(\'' + e.receiptPath + '\')">Oui</span>' : '<span class="text-muted">—</span>'}</td>
+    <td style="text-align:center;white-space:nowrap">
+      <button class="btn btn-xs btn-outline" onclick="showEditExpenseModal('${e.id}')">Modifier</button>
+      <button class="btn btn-xs btn-danger-outline" onclick="deleteExpense('${e.id}')">Suppr.</button>
+    </td>
+  </tr>`).join('');
+}
+
+function viewReceipt(filename) {
+  const url = '/api/receipts/' + encodeURIComponent(filename);
+  window.open(url, '_blank');
+}
+
+async function exportExpenses() {
+  const params = new URLSearchParams();
+  if (_expFilters.from) params.set('from', _expFilters.from);
+  if (_expFilters.to) params.set('to', _expFilters.to);
+  if (_expFilters.propertyId) params.set('propertyId', _expFilters.propertyId);
+  if (_expFilters.companyId) params.set('companyId', _expFilters.companyId);
+  if (_expFilters.category) params.set('category', _expFilters.category);
+  const a = document.createElement('a');
+  a.href = '/api/expenses/export/xlsx?' + params.toString();
+  a.download = 'depenses.xlsx';
+  const token = getToken();
+  try {
+    const res = await fetch(a.href, { headers: { Authorization: 'Bearer ' + token } });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch { toast('Erreur export', 'err'); }
+}
+
+function showAddExpenseModal() {
+  showModalLg(`
+    <h3 style="margin-bottom:16px">Ajouter une dépense</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label>Propriété *</label>
+        <select class="form-control" id="add-exp-prop">
+          <option value="">Choisir...</option>
+          ${_finProperties.map(p => `<option value="${p.id}">${esc(p.shortName)} — ${esc(p.companyName)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Catégorie *</label>
+        <select class="form-control" id="add-exp-cat">
+          <option value="">Choisir...</option>
+          ${_finCategories.map(c => `<option value="${c}">${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Montant ($) *</label>
+        <input type="number" step="0.01" class="form-control" id="add-exp-amount" placeholder="0.00">
+      </div>
+      <div class="form-group"><label>Date *</label>
+        <input type="date" class="form-control" id="add-exp-date" value="${new Date().toISOString().slice(0,10)}">
+      </div>
+      <div class="form-group"><label>Fournisseur</label>
+        <input type="text" class="form-control" id="add-exp-supplier" placeholder="Amazon, Gilco, Home Depot...">
+      </div>
+      <div class="form-group"><label># Facture / Réf.</label>
+        <input type="text" class="form-control" id="add-exp-ref" placeholder="Optionnel">
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label>Description</label>
+        <input type="text" class="form-control" id="add-exp-desc" placeholder="Détails de la dépense">
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label>Reçu (optionnel)</label>
+        <input type="file" class="form-control" id="add-exp-file" accept=".jpg,.jpeg,.png,.pdf,.webp,.heic">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="submitAddExpense()">Enregistrer</button>
+    </div>
+  `);
+}
+
+async function submitAddExpense() {
+  const propertyId = document.getElementById('add-exp-prop').value;
+  const category   = document.getElementById('add-exp-cat').value;
+  const amount     = document.getElementById('add-exp-amount').value;
+  const date       = document.getElementById('add-exp-date').value;
+  const supplier   = document.getElementById('add-exp-supplier').value;
+  const invoiceRef = document.getElementById('add-exp-ref').value;
+  const description = document.getElementById('add-exp-desc').value;
+  const fileInput  = document.getElementById('add-exp-file');
+
+  if (!propertyId || !category || !amount || !date) {
+    toast('Remplissez les champs obligatoires (*)', 'err'); return;
+  }
+
+  try {
+    if (fileInput.files.length > 0) {
+      const fd = new FormData();
+      fd.append('receipt', fileInput.files[0]);
+      fd.append('propertyId', propertyId);
+      fd.append('category', category);
+      fd.append('amount', amount);
+      fd.append('date', date);
+      fd.append('supplier', supplier);
+      fd.append('invoiceRef', invoiceRef);
+      fd.append('description', description);
+      const res = await fetch('/api/expenses/with-receipt', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + getToken() },
+        body: fd
+      });
+      if (!res.ok) { const d = await res.json(); throw d; }
+    } else {
+      await POST('/api/expenses', { propertyId, category, amount: parseFloat(amount), date, supplier, invoiceRef, description });
+    }
+    closeModal();
+    toast('Dépense ajoutée', 'ok');
+    loadExpensesList();
+    _finProperties = null; _finCategories = null; _finCompanies = null;
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+function showUploadReceiptModal() {
+  showModalLg(`
+    <h3 style="margin-bottom:16px">Ajouter via reçu</h3>
+    <p class="text-muted text-sm mb12">Téléchargez une photo ou un PDF de votre reçu. Remplissez les informations, puis enregistrez.</p>
+    <div class="form-group mb12"><label>Reçu *</label>
+      <input type="file" class="form-control" id="upl-exp-file" accept=".jpg,.jpeg,.png,.pdf,.webp,.heic">
+    </div>
+    <div id="upl-receipt-preview" style="margin-bottom:12px;text-align:center"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label>Propriété *</label>
+        <select class="form-control" id="upl-exp-prop">
+          <option value="">Choisir...</option>
+          ${_finProperties.map(p => `<option value="${p.id}">${esc(p.shortName)} — ${esc(p.companyName)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Catégorie *</label>
+        <select class="form-control" id="upl-exp-cat">
+          <option value="">Choisir...</option>
+          ${_finCategories.map(c => `<option value="${c}">${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Montant ($) *</label>
+        <input type="number" step="0.01" class="form-control" id="upl-exp-amount" placeholder="0.00">
+      </div>
+      <div class="form-group"><label>Date *</label>
+        <input type="date" class="form-control" id="upl-exp-date" value="${new Date().toISOString().slice(0,10)}">
+      </div>
+      <div class="form-group"><label>Fournisseur</label>
+        <input type="text" class="form-control" id="upl-exp-supplier" placeholder="Amazon, Gilco...">
+      </div>
+      <div class="form-group"><label># Facture / Réf.</label>
+        <input type="text" class="form-control" id="upl-exp-ref">
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label>Description</label>
+        <input type="text" class="form-control" id="upl-exp-desc">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="submitUploadExpense()">Enregistrer</button>
+    </div>
+  `);
+
+  document.getElementById('upl-exp-file').addEventListener('change', function() {
+    const preview = document.getElementById('upl-receipt-preview');
+    if (this.files.length > 0) {
+      const file = this.files[0];
+      if (file.type.startsWith('image/')) {
+        const url = URL.createObjectURL(file);
+        preview.innerHTML = '<img src="' + url + '" style="max-height:200px;border-radius:8px;border:1px solid var(--gray-200)">';
+      } else {
+        preview.innerHTML = '<div class="badge badge-active">' + esc(file.name) + '</div>';
+      }
+    }
+  });
+}
+
+async function submitUploadExpense() {
+  const fileInput = document.getElementById('upl-exp-file');
+  const propertyId = document.getElementById('upl-exp-prop').value;
+  const category   = document.getElementById('upl-exp-cat').value;
+  const amount     = document.getElementById('upl-exp-amount').value;
+  const date       = document.getElementById('upl-exp-date').value;
+  const supplier   = document.getElementById('upl-exp-supplier').value;
+  const invoiceRef = document.getElementById('upl-exp-ref').value;
+  const description = document.getElementById('upl-exp-desc').value;
+
+  if (!fileInput.files.length) { toast('Joignez un reçu', 'err'); return; }
+  if (!propertyId || !category || !amount || !date) { toast('Remplissez les champs obligatoires (*)', 'err'); return; }
+
+  const fd = new FormData();
+  fd.append('receipt', fileInput.files[0]);
+  fd.append('propertyId', propertyId);
+  fd.append('category', category);
+  fd.append('amount', amount);
+  fd.append('date', date);
+  fd.append('supplier', supplier);
+  fd.append('invoiceRef', invoiceRef);
+  fd.append('description', description);
+
+  try {
+    const res = await fetch('/api/expenses/with-receipt', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + getToken() },
+      body: fd
+    });
+    if (!res.ok) { const d = await res.json(); throw d; }
+    closeModal();
+    toast('Dépense + reçu enregistrés', 'ok');
+    loadExpensesList();
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+async function showEditExpenseModal(id) {
+  let expenses;
+  try { expenses = await GET('/api/expenses'); } catch { return; }
+  const exp = expenses.find(e => e.id === id);
+  if (!exp) { toast('Dépense introuvable', 'err'); return; }
+  await finLoadMeta();
+
+  showModalLg(`
+    <h3 style="margin-bottom:16px">Modifier la dépense</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label>Propriété</label>
+        <select class="form-control" id="edit-exp-prop">
+          ${_finProperties.map(p => `<option value="${p.id}" ${p.id === exp.propertyId ? 'selected' : ''}>${esc(p.shortName)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Catégorie</label>
+        <select class="form-control" id="edit-exp-cat">
+          ${_finCategories.map(c => `<option value="${c}" ${c === exp.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Montant ($)</label>
+        <input type="number" step="0.01" class="form-control" id="edit-exp-amount" value="${exp.amount}">
+      </div>
+      <div class="form-group"><label>Date</label>
+        <input type="date" class="form-control" id="edit-exp-date" value="${exp.date}">
+      </div>
+      <div class="form-group"><label>Fournisseur</label>
+        <input type="text" class="form-control" id="edit-exp-supplier" value="${esc(exp.supplier || '')}">
+      </div>
+      <div class="form-group"><label># Facture</label>
+        <input type="text" class="form-control" id="edit-exp-ref" value="${esc(exp.invoiceRef || '')}">
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label>Description</label>
+        <input type="text" class="form-control" id="edit-exp-desc" value="${esc(exp.description || '')}">
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label>Reçu ${exp.receiptPath ? '(un reçu est déjà joint)' : ''}</label>
+        <input type="file" class="form-control" id="edit-exp-file" accept=".jpg,.jpeg,.png,.pdf,.webp,.heic">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="submitEditExpense('${id}')">Enregistrer</button>
+    </div>
+  `);
+}
+
+async function submitEditExpense(id) {
+  const data = {
+    propertyId: document.getElementById('edit-exp-prop').value,
+    category:   document.getElementById('edit-exp-cat').value,
+    amount:     parseFloat(document.getElementById('edit-exp-amount').value),
+    date:       document.getElementById('edit-exp-date').value,
+    supplier:   document.getElementById('edit-exp-supplier').value,
+    invoiceRef: document.getElementById('edit-exp-ref').value,
+    description: document.getElementById('edit-exp-desc').value
+  };
+  try {
+    await PUT('/api/expenses/' + id, data);
+    const fileInput = document.getElementById('edit-exp-file');
+    if (fileInput.files.length > 0) {
+      const fd = new FormData();
+      fd.append('receipt', fileInput.files[0]);
+      await fetch('/api/expenses/' + id + '/receipt', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + getToken() },
+        body: fd
+      });
+    }
+    closeModal();
+    toast('Dépense modifiée', 'ok');
+    loadExpensesList();
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+async function deleteExpense(id) {
+  if (!confirm('Supprimer cette dépense ?')) return;
+  try {
+    await DELETE('/api/expenses/' + id);
+    toast('Dépense supprimée', 'ok');
+    loadExpensesList();
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+// ── Budgets Page ──
+
+async function renderBudgets() {
+  const body = document.getElementById('page-body');
+  await finLoadMeta();
+
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const monthNames = ['','Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+
+  let budgets, expenses;
+  try {
+    budgets = await GET(`/api/budgets?year=${y}&month=${m}`);
+    const mStr = `${y}-${String(m).padStart(2, '0')}`;
+    expenses = await GET(`/api/expenses?from=${mStr}-01&to=${mStr}-31`);
+  } catch { body.innerHTML = '<div class="empty-state"><div class="empty-title">Erreur de chargement</div></div>'; return; }
+
+  const spentMap = {};
+  expenses.forEach(e => {
+    const key = e.propertyId + '|' + e.category;
+    spentMap[key] = (spentMap[key] || 0) + e.amount;
+  });
+
+  body.innerHTML = `
+    <div class="fin-header">
+      <h2 class="fin-title">Budgets — ${monthNames[m]} ${y}</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select class="form-control" id="budget-month" style="width:auto" onchange="changeBudgetMonth()">
+          ${Array.from({length:12}, (_, i) => {
+            const mi = i + 1;
+            return `<option value="${mi}" ${mi === m ? 'selected' : ''}>${monthNames[mi]}</option>`;
+          }).join('')}
+        </select>
+        <button class="btn btn-primary" onclick="showAddBudgetModal()">+ Ajouter un budget</button>
+        <button class="btn btn-outline" onclick="showManageCategoriesModal()">Catégories</button>
+      </div>
+    </div>
+
+    <div class="card mb12">
+      <div class="card-body" style="overflow-x:auto">
+        <table class="table" id="budgets-table">
+          <thead><tr>
+            <th>Propriété</th><th>Compagnie</th><th>Catégorie</th>
+            <th style="text-align:right">Budget</th><th style="text-align:right">Dépensé</th>
+            <th style="text-align:right">Restant</th><th style="text-align:center">%</th>
+            <th style="text-align:center">Actions</th>
+          </tr></thead>
+          <tbody>
+          ${budgets.length === 0 ? '<tr><td colspan="8" class="text-center text-muted">Aucun budget configuré pour ce mois.<br>Cliquez <strong>+ Ajouter un budget</strong> pour commencer.</td></tr>' : ''}
+          ${budgets.map(b => {
+            const key = b.propertyId + '|' + b.category;
+            const spent = Math.round((spentMap[key] || 0) * 100) / 100;
+            const remaining = Math.round((b.monthlyLimit - spent) * 100) / 100;
+            const pct = b.monthlyLimit > 0 ? Math.round((spent / b.monthlyLimit) * 100) : 0;
+            return `<tr>
+              <td class="fw600">${esc(b.propertyName)}</td>
+              <td class="text-muted">${esc(b.companyName)}</td>
+              <td>${esc(b.category)}</td>
+              <td style="text-align:right">${fmtMoney(b.monthlyLimit)}</td>
+              <td style="text-align:right" class="fw600">${fmtMoney(spent)}</td>
+              <td style="text-align:right;color:${remaining < 0 ? 'var(--red)' : 'var(--green)'}">${fmtMoney(remaining)}</td>
+              <td style="text-align:center">${pctBadge(pct)}</td>
+              <td style="text-align:center">
+                <button class="btn btn-xs btn-danger-outline" onclick="deleteBudget('${b.id}')">Suppr.</button>
+              </td>
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    ${budgets.length > 0 ? `
+    <div class="card mb12">
+      <div class="card-head">Résumé par propriété</div>
+      <div class="card-body">
+        ${(() => {
+          const propSummary = {};
+          budgets.forEach(b => {
+            if (!propSummary[b.propertyId]) propSummary[b.propertyId] = { name: b.propertyName, budget: 0, spent: 0 };
+            propSummary[b.propertyId].budget += b.monthlyLimit;
+            const key = b.propertyId + '|' + b.category;
+            propSummary[b.propertyId].spent += (spentMap[key] || 0);
+          });
+          return Object.values(propSummary).map(p => {
+            const pct = p.budget > 0 ? Math.round((p.spent / p.budget) * 100) : 0;
+            return `<div class="fin-budget-row">
+              <span class="fw600" style="width:140px">${esc(p.name)}</span>
+              <div class="fin-budget-bar-wrap">
+                <div class="fin-budget-bar ${pct >= 100 ? 'over' : pct >= 80 ? 'warn' : ''}" style="width:${Math.min(pct, 100)}%"></div>
+              </div>
+              <span style="width:80px;text-align:right">${pct}%</span>
+              <span class="text-muted" style="width:180px;text-align:right">${fmtMoney(p.spent)} / ${fmtMoney(p.budget)}</span>
+            </div>`;
+          }).join('');
+        })()}
+      </div>
+    </div>` : ''}
+  `;
+}
+
+function changeBudgetMonth() {
+  renderBudgets();
+}
+
+function showAddBudgetModal() {
+  showModalLg(`
+    <h3 style="margin-bottom:16px">Ajouter un budget</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group"><label>Propriété</label>
+        <select class="form-control" id="add-bud-prop">
+          <option value="">Choisir...</option>
+          ${_finProperties.map(p => `<option value="${p.id}">${esc(p.shortName)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Catégorie</label>
+        <select class="form-control" id="add-bud-cat">
+          <option value="">Choisir...</option>
+          ${_finCategories.map(c => `<option value="${c}">${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group"><label>Budget mensuel ($)</label>
+        <input type="number" step="0.01" class="form-control" id="add-bud-limit" placeholder="0.00">
+      </div>
+      <div class="form-group"><label>Mois</label>
+        <input type="month" class="form-control" id="add-bud-month" value="${new Date().toISOString().slice(0,7)}">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="submitAddBudget()">Enregistrer</button>
+    </div>
+  `);
+}
+
+async function submitAddBudget() {
+  const propertyId = document.getElementById('add-bud-prop').value;
+  const category = document.getElementById('add-bud-cat').value;
+  const monthlyLimit = document.getElementById('add-bud-limit').value;
+  const monthVal = document.getElementById('add-bud-month').value;
+  if (!propertyId || !category || !monthlyLimit || !monthVal) {
+    toast('Remplissez tous les champs', 'err'); return;
+  }
+  const [y, m] = monthVal.split('-').map(Number);
+  try {
+    await POST('/api/budgets', { propertyId, category, monthlyLimit: parseFloat(monthlyLimit), year: y, month: m });
+    closeModal();
+    toast('Budget ajouté', 'ok');
+    renderBudgets();
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+async function deleteBudget(id) {
+  if (!confirm('Supprimer ce budget ?')) return;
+  try {
+    await DELETE('/api/budgets/' + id);
+    toast('Budget supprimé', 'ok');
+    renderBudgets();
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+function showManageCategoriesModal() {
+  showModalLg(`
+    <h3 style="margin-bottom:16px">Gérer les catégories</h3>
+    <div id="cat-list" class="mb12"></div>
+    <div style="display:flex;gap:8px;align-items:flex-end">
+      <div class="form-group" style="flex:1;margin-bottom:0"><label>Nouvelle catégorie</label>
+        <input type="text" class="form-control" id="new-cat-name" placeholder="Nom de la catégorie">
+      </div>
+      <button class="btn btn-primary" onclick="addCategory()">Ajouter</button>
+    </div>
+    <div style="text-align:right;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Fermer</button>
+    </div>
+  `);
+  loadCategoriesList();
+}
+
+async function loadCategoriesList() {
+  const div = document.getElementById('cat-list');
+  if (!div) return;
+  try {
+    const cats = await GET('/api/expense-categories');
+    _finCategories = cats;
+    div.innerHTML = cats.map(c => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--gray-100)">
+        <span>${esc(c)}</span>
+        <button class="btn btn-xs btn-danger-outline" onclick="removeCategory('${esc(c)}')">Suppr.</button>
+      </div>
+    `).join('');
+  } catch { div.innerHTML = '<p class="text-muted">Erreur</p>'; }
+}
+
+async function addCategory() {
+  const name = document.getElementById('new-cat-name').value.trim();
+  if (!name) { toast('Nom requis', 'err'); return; }
+  try {
+    await POST('/api/expense-categories', { name });
+    document.getElementById('new-cat-name').value = '';
+    toast('Catégorie ajoutée', 'ok');
+    loadCategoriesList();
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+async function removeCategory(name) {
+  if (!confirm('Supprimer la catégorie "' + name + '" ?')) return;
+  try {
+    await DELETE('/api/expense-categories/' + encodeURIComponent(name));
+    toast('Catégorie supprimée', 'ok');
+    loadCategoriesList();
+  } catch (e) { toast(e.error || 'Erreur', 'err'); }
+}
+
+// ─── END FINANCE MODULE ─────────────────────────────────────────────────────
 
 async function renderAccount() {
   const body = document.getElementById('page-body');
